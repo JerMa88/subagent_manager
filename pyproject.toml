@@ -1,0 +1,78 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "subagent-manager"
+version = "0.1.0"
+description = "Universal subagent orchestration framework that enforces short-horizon reasoning to reduce LLM hallucinations"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.10"
+authors = [
+    { name = "subagent_manager contributors" },
+]
+keywords = [
+    "llm",
+    "agents",
+    "subagents",
+    "orchestration",
+    "reasoning",
+    "tool-calling",
+    "edge-ai",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "litellm>=1.40.0",
+    "duckduckgo-search>=6.0.0",
+    "httpx>=0.27.0",
+    "beautifulsoup4>=4.12.0",
+    "markdownify>=0.13.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.5.0",
+    "mypy>=1.10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/JerMa88/subagent_manager"
+Repository = "https://github.com/JerMa88/subagent_manager"
+Issues = "https://github.com/JerMa88/subagent_manager/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/subagent_manager"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Prompt files have intentionally long lines (LLM prompts read better as single lines)
+"src/subagent_manager/prompts/*.py" = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
