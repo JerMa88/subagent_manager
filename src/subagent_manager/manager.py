@@ -1,0 +1,411 @@
+"""
+SubAgentManager — the conductor of the orchestration.
+
+This is the main entry point for the framework. It:
+1. Takes a high-level goal from the user
+2. Uses an LLM to decompose it into atomic subtasks
+3. Delegates each subtask to an isolated subagent
+4. Collects results and synthesizes a final answer
+
+The manager enforces SHORT-HORIZON reasoning:
+- The manager ONLY plans and synthesizes — it never does direct work
+- Each subagent gets ONE task in a FRESH context
+- Subagent answers are concise and grounded
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+from subagent_manager.llm_client import LLMClient
+from subagent_manager.prompts.orchestrator import (
+    build_orchestrator_system_prompt,
+    build_synthesis_prompt,
+)
+from subagent_manager.strategies.adaptive import AdaptiveStrategy
+from subagent_manager.strategies.base import BaseStrategy, ExecutionPlan, SubtaskDef
+from subagent_manager.strategies.parallel import ParallelStrategy
+from subagent_manager.strategies.sequential import SequentialStrategy
+from subagent_manager.subagent import SubAgent, SubAgentConfig, SubAgentResult
+from subagent_manager.tools.file_reader import FileReaderTool
+from subagent_manager.tools.python_exec import PythonExecTool
+from subagent_manager.tools.url_reader import URLReaderTool
+from subagent_manager.tools.web_search import WebSearchTool
+
+logger = logging.getLogger(__name__)
+
+# Default agent configurations that cover common use cases
+DEFAULT_AGENTS: list[SubAgentConfig] = [
+    SubAgentConfig(
+        name="researcher",
+        description=(
+            "Searches the web and reads URLs to find factual information. "
+            "Use for any task that requires current data, facts, statistics, "
+            "or information from the internet."
+        ),
+        tools=[WebSearchTool(), URLReaderTool()],
+    ),
+    SubAgentConfig(
+        name="analyzer",
+        description=(
+            "Analyzes information, compares options, evaluates tradeoffs, "
+            "and draws conclusions. Use for tasks that require reasoning "
+            "about provided context — but NOT for gathering new information."
+        ),
+        tools=[],  # Pure reasoning — no tools needed
+    ),
+    SubAgentConfig(
+        name="coder",
+        description=(
+            "Executes Python code for calculations, data processing, "
+            "and analysis. Also reads files for code review tasks."
+        ),
+        tools=[PythonExecTool(), FileReaderTool()],
+    ),
+    SubAgentConfig(
+        name="verifier",
+        description=(
+            "Fact-checks claims by searching the web for corroborating "
+            "or contradicting evidence. Use to verify information from "
+            "other subtasks."
+        ),
+        tools=[WebSearchTool(), URLReaderTool()],
+    ),
+]
+
+
+@dataclass
+class ManagerResult:
+    """
+    The final result from the SubAgentManager.
+
+    Contains the synthesized answer plus full metadata about
+    the orchestration process.
+    """
+
+    answer: str
+    """The final synthesized answer."""
+
+    subtask_results: list[SubAgentResult] = field(default_factory=list)
+    """Individual results from each subagent."""
+
+    plan: list[dict[str, Any]] = field(default_factory=list)
+    """The decomposition plan created by the orchestrator."""
+
+    total_tokens: int = 0
+    """Total tokens consumed across all agents."""
+
+    total_tool_calls: int = 0
+    """Total tool calls across all agents."""
+
+    sources: list[str] = field(default_factory=list)
+    """All sources discovered during execution."""
+
+
+class SubAgentManager:
+    """
+    The conductor. Plans tasks, delegates to subagents, synthesizes results.
+
+    This is the main entry point for the framework.
+
+    Usage:
+        manager = SubAgentManager(model="ollama/qwen3")
+        result = manager.run_sync("What are the latest advances in quantum computing?")
+        print(result.answer)
+    """
+
+    def __init__(
+        self,
+        model: str = "ollama/qwen3",
+        subagents: list[SubAgentConfig] | None = None,
+        strategy: str = "adaptive",
+        max_subtasks: int = 10,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        orchestrator_model: str | None = None,
+        verbose: bool = False,
+    ) -> None:
+        """
+        Initialize the SubAgentManager.
+
+        Args:
+            model: Default LLM model for all agents (LiteLLM format).
+                Examples: "ollama/qwen3", "gpt-4o-mini", "gemini/gemini-2.5-flash"
+            subagents: Custom subagent configurations. If None, uses defaults.
+            strategy: Execution strategy: "parallel", "sequential", or "adaptive".
+            max_subtasks: Maximum subtasks the orchestrator can create.
+            api_key: API key (optional, can use env vars).
+            api_base: Custom API base URL (for Ollama, etc.).
+            orchestrator_model: Override model for the orchestrator (can be
+                smarter/larger than subagent models).
+            verbose: Enable debug logging.
+        """
+        if verbose:
+            logging.basicConfig(level=logging.DEBUG)
+            logger.setLevel(logging.DEBUG)
+
+        self.model = model
+        self.max_subtasks = max_subtasks
+
+        # LLM clients
+        self.llm_client = LLMClient(
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+        )
+        self.orchestrator_client = (
+            LLMClient(model=orchestrator_model, api_key=api_key, api_base=api_base)
+            if orchestrator_model
+            else self.llm_client
+        )
+
+        # Subagent configs and instances
+        self.agent_configs = subagents or DEFAULT_AGENTS
+        self.agents: dict[str, SubAgent] = {}
+        for config in self.agent_configs:
+            self.agents[config.name] = SubAgent(
+                config=config,
+                llm_client=self.llm_client,
+            )
+
+        # Execution strategy
+        self.strategy = self._get_strategy(strategy)
+
+    def _get_strategy(self, name: str) -> BaseStrategy:
+        """Get the execution strategy by name."""
+        strategies: dict[str, BaseStrategy] = {
+            "parallel": ParallelStrategy(),
+            "sequential": SequentialStrategy(),
+            "adaptive": AdaptiveStrategy(),
+        }
+        if name not in strategies:
+            raise ValueError(
+                f"Unknown strategy '{name}'. Choose from: {list(strategies.keys())}"
+            )
+        return strategies[name]
+
+    async def run(self, goal: str, context: str = "") -> ManagerResult:
+        """
+        Execute a complex goal through subagent orchestration.
+
+        This is the main method. It:
+        1. Uses the orchestrator LLM to decompose the goal into subtasks
+        2. Executes subtasks via the selected strategy
+        3. Synthesizes results into a final answer
+
+        Args:
+            goal: The high-level goal or question from the user.
+            context: Optional additional context for the orchestrator.
+
+        Returns:
+            ManagerResult with the final answer and full metadata.
+        """
+        logger.info(f"Starting orchestration for goal: {goal[:100]}...")
+
+        # Step 1: Plan — decompose into subtasks
+        plan, raw_plan = await self._plan(goal, context)
+
+        if not plan.subtasks:
+            # Fallback: if planning fails, use a single researcher
+            logger.warning("Planning produced no subtasks. Using fallback.")
+            plan = ExecutionPlan(subtasks=[
+                SubtaskDef(id=1, task=goal, agent_name="researcher"),
+            ])
+            raw_plan = [{"id": 1, "task": goal, "agent": "researcher"}]
+
+        logger.info(f"Plan created with {len(plan.subtasks)} subtasks")
+
+        # Step 2: Execute — run subtasks via strategy
+        subtask_results = await self.strategy.execute(plan, self.agents)
+
+        # Step 3: Synthesize — combine results into final answer
+        final_answer = await self._synthesize(goal, subtask_results)
+
+        # Aggregate metadata
+        all_sources: list[str] = []
+        total_tokens = 0
+        total_tool_calls = 0
+        for r in subtask_results:
+            total_tokens += r.tokens_used
+            total_tool_calls += r.tool_calls_made
+            for s in r.sources:
+                if s not in all_sources:
+                    all_sources.append(s)
+
+        return ManagerResult(
+            answer=final_answer,
+            subtask_results=subtask_results,
+            plan=raw_plan,
+            total_tokens=total_tokens,
+            total_tool_calls=total_tool_calls,
+            sources=all_sources,
+        )
+
+    def run_sync(self, goal: str, context: str = "") -> ManagerResult:
+        """
+        Synchronous wrapper for run().
+
+        Convenience method for scripts and notebooks that don't
+        want to deal with async/await.
+
+        Args:
+            goal: The high-level goal or question.
+            context: Optional additional context.
+
+        Returns:
+            ManagerResult with the final answer and metadata.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # We're inside an existing event loop (e.g., Jupyter)
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(asyncio.run, self.run(goal, context))
+                return future.result()
+        else:
+            return asyncio.run(self.run(goal, context))
+
+    async def _plan(
+        self, goal: str, context: str = ""
+    ) -> tuple[ExecutionPlan, list[dict[str, Any]]]:
+        """
+        Use the orchestrator LLM to decompose the goal into subtasks.
+
+        Returns:
+            Tuple of (ExecutionPlan, raw plan data for metadata).
+        """
+        # Build the orchestrator prompt
+        agent_descriptions = [
+            {"name": c.name, "description": c.description}
+            for c in self.agent_configs
+        ]
+        system_prompt = build_orchestrator_system_prompt(
+            available_agents=agent_descriptions,
+            max_subtasks=self.max_subtasks,
+        )
+
+        user_content = f"## GOAL\n\n{goal}"
+        if context:
+            user_content = f"## ADDITIONAL CONTEXT\n\n{context}\n\n{user_content}"
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+
+        result = await self.orchestrator_client.complete(
+            messages=messages,
+            max_tokens=2048,
+        )
+
+        # Parse the JSON plan
+        plan_data = self._parse_plan_json(result.content)
+
+        subtasks = []
+        for item in plan_data:
+            subtasks.append(
+                SubtaskDef(
+                    id=item.get("id", len(subtasks) + 1),
+                    task=item.get("task", ""),
+                    agent_name=item.get("agent", "researcher"),
+                    depends_on=item.get("depends_on", []),
+                    context=item.get("context", ""),
+                )
+            )
+
+        return ExecutionPlan(subtasks=subtasks), plan_data
+
+    def _parse_plan_json(self, text: str) -> list[dict[str, Any]]:
+        """
+        Parse the orchestrator's JSON plan from its response.
+
+        Handles various formats: pure JSON, JSON in code blocks,
+        or JSON embedded in text.
+        """
+        # Try direct JSON parse
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict) and "plan" in data:
+                return data["plan"]
+            if isinstance(data, list):
+                return data
+        except json.JSONDecodeError:
+            pass
+
+        # Try extracting JSON from code blocks
+        json_blocks = re.findall(r"```(?:json)?\s*\n([\s\S]*?)\n```", text)
+        for block in json_blocks:
+            try:
+                data = json.loads(block)
+                if isinstance(data, dict) and "plan" in data:
+                    return data["plan"]
+                if isinstance(data, list):
+                    return data
+            except json.JSONDecodeError:
+                continue
+
+        # Try finding JSON object/array in text
+        for pattern in [r"\{[\s\S]*\}", r"\[[\s\S]*\]"]:
+            matches = re.findall(pattern, text)
+            for match in matches:
+                try:
+                    data = json.loads(match)
+                    if isinstance(data, dict) and "plan" in data:
+                        return data["plan"]
+                    if isinstance(data, list):
+                        return data
+                except json.JSONDecodeError:
+                    continue
+
+        logger.warning(f"Could not parse plan JSON from: {text[:200]}...")
+        return []
+
+    async def _synthesize(
+        self, goal: str, results: list[SubAgentResult]
+    ) -> str:
+        """
+        Synthesize subagent results into a final answer.
+
+        The synthesis prompt instructs the LLM to combine results
+        without adding new information — it's a reducer, not a generator.
+        """
+        result_dicts = [
+            {
+                "task": r.task,
+                "agent": r.agent_name,
+                "answer": r.answer,
+                "sources": r.sources,
+                "success": r.success,
+            }
+            for r in results
+        ]
+
+        synthesis_prompt = build_synthesis_prompt(
+            original_goal=goal,
+            subtask_results=result_dicts,
+        )
+
+        messages = [
+            {"role": "system", "content": synthesis_prompt},
+            {
+                "role": "user",
+                "content": "Please synthesize the results into a final answer.",
+            },
+        ]
+
+        result = await self.orchestrator_client.complete(
+            messages=messages,
+            max_tokens=2048,
+        )
+
+        return result.content
