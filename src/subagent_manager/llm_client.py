@@ -168,14 +168,32 @@ class LLMClient:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        # Retry logic: thinking models can exhaust max_tokens on thinking
-        # alone, returning empty content. Retry once with a larger budget.
-        max_attempts = 2
+        # Retry logic: thinking models (Gemma 4, etc.) can exhaust max_tokens
+        # on internal <think> tokens, returning empty content. LiteLLM throws
+        # "model output error" in this case. We catch it and retry with a
+        # larger token budget.
+        max_attempts = 3
         response = None
         for attempt in range(max_attempts):
             try:
                 response = await litellm.acompletion(**kwargs)
             except Exception as e:
+                error_msg = str(e).lower()
+                is_empty_output = (
+                    "model output" in error_msg
+                    or "cannot both be empty" in error_msg
+                )
+                if is_empty_output and attempt < max_attempts - 1:
+                    old_max = kwargs["max_tokens"]
+                    kwargs["max_tokens"] = old_max * 2
+                    logger.warning(
+                        f"Empty model output (thinking model likely exhausted "
+                        f"token budget). Retrying with max_tokens="
+                        f"{kwargs['max_tokens']} (was {old_max}), "
+                        f"attempt {attempt + 2}/{max_attempts}"
+                    )
+                    await asyncio.sleep(0.5)
+                    continue
                 logger.error(f"LLM completion failed: {e}")
                 raise
 
@@ -185,19 +203,20 @@ class LLMClient:
                 and response.choices[0].message.tool_calls
             )
 
-            if content_text.strip() or has_tool_calls or attempt >= max_attempts - 1:
+            if content_text.strip() or has_tool_calls:
                 break
 
-            # Empty response — likely a thinking model that ran out of tokens.
-            # Double the budget and retry.
-            old_max = kwargs["max_tokens"]
-            kwargs["max_tokens"] = old_max * 2
-            logger.warning(
-                f"Empty response with {response.usage.completion_tokens if response.usage else '?'} "
-                f"completion tokens (likely thinking model). "
-                f"Retrying with max_tokens={kwargs['max_tokens']} (was {old_max})"
-            )
-            await asyncio.sleep(0.5)
+            # Got a response but content is empty (thinking ate all tokens)
+            if attempt < max_attempts - 1:
+                old_max = kwargs["max_tokens"]
+                kwargs["max_tokens"] = old_max * 2
+                logger.warning(
+                    f"Empty response with "
+                    f"{response.usage.completion_tokens if response.usage else '?'} "
+                    f"completion tokens. Retrying with max_tokens="
+                    f"{kwargs['max_tokens']} (was {old_max})"
+                )
+                await asyncio.sleep(0.5)
 
         choice = response.choices[0]
         message = choice.message

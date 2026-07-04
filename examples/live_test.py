@@ -3,6 +3,11 @@ Live integration test for subagent_manager.
 
 Runs a real query against Ollama and logs every step of the
 orchestration pipeline with timestamps.
+
+Usage:
+    python examples/live_test.py
+
+Output is saved to examples/live_test_output.log
 """
 
 import asyncio
@@ -11,25 +16,37 @@ import logging
 import time
 import sys
 
-# Set up detailed logging BEFORE imports
+# Only show INFO from our code, suppress all the noisy library debug output
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
     stream=sys.stdout,
 )
+# Suppress noisy libraries
+for noisy in [
+    "httpcore", "httpx", "LiteLLM", "litellm",
+    "primp", "hickory_net", "hickory_resolver",
+    "h2", "hyper_util", "rustls",
+]:
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 
 from subagent_manager import SubAgentManager, SubAgentConfig
 from subagent_manager.tools import WebSearchTool
 
 
 async def main():
-    print("=" * 70)
-    print("SUBAGENT MANAGER — LIVE INTEGRATION TEST")
-    print("=" * 70)
+    header = "=" * 70
+    output_lines: list[str] = []
 
-    # Use a simple question that doesn't require web search
-    # so we can test the core plan→delegate→synthesize loop
+    def log(msg: str = ""):
+        print(msg)
+        output_lines.append(msg)
+
+    log(header)
+    log("SUBAGENT MANAGER — LIVE INTEGRATION TEST")
+    log(header)
+
     manager = SubAgentManager(
         model="ollama/gemma4:e2b-mlx",
         subagents=[
@@ -40,8 +57,8 @@ async def main():
                     "and statistics. Use for any task requiring real-world facts."
                 ),
                 tools=[WebSearchTool()],
-                max_tool_iterations=2,
-                max_answer_tokens=300,
+                max_tool_iterations=3,
+                max_answer_tokens=512,
             ),
             SubAgentConfig(
                 name="analyzer",
@@ -50,7 +67,7 @@ async def main():
                     "Use for reasoning about provided data — NOT for gathering new info."
                 ),
                 tools=[],
-                max_answer_tokens=300,
+                max_answer_tokens=512,
             ),
         ],
         strategy="adaptive",
@@ -58,54 +75,60 @@ async def main():
         verbose=True,
     )
 
-    print(f"\nModel: {manager.model}")
-    print(f"Agents: {list(manager.agents.keys())}")
-    print(f"Strategy: {type(manager.strategy).__name__}")
+    log(f"\nModel: {manager.model}")
+    log(f"Agents: {list(manager.agents.keys())}")
+    log(f"Strategy: {type(manager.strategy).__name__}")
 
     query = "What are 3 benefits of using Python for machine learning?"
 
-    print(f"\n{'=' * 70}")
-    print(f"QUERY: {query}")
-    print(f"{'=' * 70}\n")
+    log(f"\n{header}")
+    log(f"QUERY: {query}")
+    log(f"{header}\n")
 
     t0 = time.time()
     result = await manager.run(query)
     elapsed = time.time() - t0
 
     # ---- Print Results ----
-    print(f"\n{'=' * 70}")
-    print("ORCHESTRATION PLAN")
-    print(f"{'=' * 70}")
-    print(json.dumps(result.plan, indent=2))
+    log(f"\n{header}")
+    log("ORCHESTRATION PLAN")
+    log(header)
+    log(json.dumps(result.plan, indent=2))
 
-    print(f"\n{'=' * 70}")
-    print("SUBTASK RESULTS")
-    print(f"{'=' * 70}")
+    log(f"\n{header}")
+    log("SUBTASK RESULTS")
+    log(header)
     for i, r in enumerate(result.subtask_results, 1):
         status = "✓" if r.success else "✗ FAILED"
-        print(f"\n--- Subtask {i} [{status}] (Agent: {r.agent_name}) ---")
-        print(f"Task: {r.task}")
-        print(f"Tool calls: {r.tool_calls_made}")
-        print(f"Tokens: {r.tokens_used}")
+        log(f"\n--- Subtask {i} [{status}] (Agent: {r.agent_name}) ---")
+        log(f"Task: {r.task}")
+        log(f"Tool calls: {r.tool_calls_made}")
+        log(f"Tokens: {r.tokens_used}")
         if r.sources:
-            print(f"Sources: {r.sources}")
-        print(f"Answer:\n{r.answer[:500]}")
+            log(f"Sources: {r.sources}")
+        log(f"Answer:\n{r.answer[:800]}")
         if r.error:
-            print(f"Error: {r.error}")
+            log(f"Error: {r.error}")
 
-    print(f"\n{'=' * 70}")
-    print("FINAL SYNTHESIZED ANSWER")
-    print(f"{'=' * 70}")
-    print(result.answer)
+    log(f"\n{header}")
+    log("FINAL SYNTHESIZED ANSWER")
+    log(header)
+    log(result.answer)
 
-    print(f"\n{'=' * 70}")
-    print("SUMMARY")
-    print(f"{'=' * 70}")
-    print(f"Total time: {elapsed:.1f}s")
-    print(f"Subtasks: {len(result.subtask_results)}")
-    print(f"Tool calls: {result.total_tool_calls}")
-    print(f"Tokens: {result.total_tokens}")
-    print(f"Sources: {len(result.sources)}")
+    log(f"\n{header}")
+    log("SUMMARY")
+    log(header)
+    log(f"Total time: {elapsed:.1f}s")
+    log(f"Subtasks: {len(result.subtask_results)}")
+    log(f"Tool calls: {result.total_tool_calls}")
+    log(f"Tokens: {result.total_tokens}")
+    log(f"Sources: {len(result.sources)}")
+
+    # Save to file
+    import pathlib
+    out_path = pathlib.Path(__file__).parent / "live_test_output.log"
+    out_path.write_text("\n".join(output_lines))
+    log(f"\n📄 Output saved to: {out_path}")
 
 
 if __name__ == "__main__":
