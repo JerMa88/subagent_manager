@@ -15,13 +15,25 @@ Supports 100+ providers via LiteLLM:
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import re
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 from subagent_manager.tools.base import BaseTool
 
 logger = logging.getLogger(__name__)
+
+# Providers where LiteLLM's native tool support works correctly.
+# For all others, we use prompt-based tool calling to avoid
+# LiteLLM injecting broken JSON mode / format directives.
+_NATIVE_TOOL_PROVIDERS = frozenset({
+    "openai", "anthropic", "gemini", "azure", "cohere",
+    "mistral", "groq", "together_ai", "deepseek",
+})
 
 
 @dataclass
@@ -92,6 +104,12 @@ class LLMClient:
         self.default_temperature = default_temperature
         self.default_max_tokens = default_max_tokens
 
+    @property
+    def _supports_native_tools(self) -> bool:
+        """Check if this model's provider supports LiteLLM native tool calling."""
+        provider = self.model.split("/")[0] if "/" in self.model else "openai"
+        return provider in _NATIVE_TOOL_PROVIDERS
+
     async def complete(
         self,
         messages: list[dict[str, Any]],
@@ -130,27 +148,63 @@ class LLMClient:
             "max_tokens": max_tokens or self.default_max_tokens,
         }
 
+        # For local/Ollama models (especially thinking models like Gemma 4),
+        # the thinking tokens count against max_tokens. Boost the budget
+        # so there's room for both thinking and the actual response.
+        if not self._supports_native_tools:
+            kwargs["max_tokens"] = kwargs["max_tokens"] * 4
+
         if self.api_key:
             kwargs["api_key"] = self.api_key
         if self.api_base:
             kwargs["api_base"] = self.api_base
 
-        if tools:
+        # Only pass tools to LiteLLM for providers with working native support.
+        # For Ollama and others, LiteLLM injects broken JSON mode directives
+        # that corrupt the conversation. We handle those via prompt-based
+        # tool calling in complete_with_tool_loop() instead.
+        use_native_tools = tools and self._supports_native_tools
+        if use_native_tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        try:
-            response = await litellm.acompletion(**kwargs)
-        except Exception as e:
-            logger.error(f"LLM completion failed: {e}")
-            raise
+        # Retry logic: thinking models can exhaust max_tokens on thinking
+        # alone, returning empty content. Retry once with a larger budget.
+        max_attempts = 2
+        response = None
+        for attempt in range(max_attempts):
+            try:
+                response = await litellm.acompletion(**kwargs)
+            except Exception as e:
+                logger.error(f"LLM completion failed: {e}")
+                raise
+
+            content_text = response.choices[0].message.content or ""
+            has_tool_calls = (
+                hasattr(response.choices[0].message, "tool_calls")
+                and response.choices[0].message.tool_calls
+            )
+
+            if content_text.strip() or has_tool_calls or attempt >= max_attempts - 1:
+                break
+
+            # Empty response — likely a thinking model that ran out of tokens.
+            # Double the budget and retry.
+            old_max = kwargs["max_tokens"]
+            kwargs["max_tokens"] = old_max * 2
+            logger.warning(
+                f"Empty response with {response.usage.completion_tokens if response.usage else '?'} "
+                f"completion tokens (likely thinking model). "
+                f"Retrying with max_tokens={kwargs['max_tokens']} (was {old_max})"
+            )
+            await asyncio.sleep(0.5)
 
         choice = response.choices[0]
         message = choice.message
 
-        # Extract tool calls
+        # Extract tool calls (native mode only)
         tool_calls_data = []
-        if hasattr(message, "tool_calls") and message.tool_calls:
+        if use_native_tools and hasattr(message, "tool_calls") and message.tool_calls:
             for tc in message.tool_calls:
                 tool_calls_data.append({
                     "id": tc.id,
@@ -159,6 +213,8 @@ class LLMClient:
                         "arguments": tc.function.arguments,
                     },
                 })
+
+        content = message.content or ""
 
         # Extract usage
         usage = {}
@@ -170,7 +226,7 @@ class LLMClient:
             }
 
         return CompletionResult(
-            content=message.content or "",
+            content=content,
             tool_calls=tool_calls_data,
             finish_reason=choice.finish_reason or "stop",
             usage=usage,
@@ -191,6 +247,13 @@ class LLMClient:
         up to `max_iterations` rounds. This hard cap prevents runaway
         reasoning chains — a core part of the short-horizon constraint.
 
+        Supports two modes:
+        - **Native**: For providers like OpenAI/Anthropic/Gemini that support
+          structured tool calling via the API.
+        - **Prompt-based**: For Ollama and other providers where native tool
+          support is broken. Tool descriptions are embedded in the prompt,
+          and tool calls are parsed from the model's text output.
+
         Args:
             messages: Initial messages (system + user).
             tools: List of BaseTool instances available to the model.
@@ -201,22 +264,38 @@ class LLMClient:
         Returns:
             ToolLoopResult with the final answer and metadata.
         """
-        # Build tool schemas
+        if self._supports_native_tools:
+            return await self._tool_loop_native(
+                messages, tools, max_iterations, temperature, max_tokens
+            )
+        else:
+            return await self._tool_loop_prompt_based(
+                messages, tools, max_iterations, temperature, max_tokens
+            )
+
+    async def _tool_loop_native(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[BaseTool],
+        max_iterations: int,
+        temperature: float | None,
+        max_tokens: int | None,
+    ) -> ToolLoopResult:
+        """Tool loop for providers with native function calling support."""
         tool_schemas = [t.to_openai_schema() for t in tools]
         tool_map = {t.name: t for t in tools}
 
-        # Working copy of messages
         conversation = list(messages)
         total_tool_calls = 0
         total_tokens = 0
         sources: list[str] = []
 
         for iteration in range(max_iterations):
-            logger.debug(f"Tool loop iteration {iteration + 1}/{max_iterations}")
+            logger.debug(f"Native tool loop iteration {iteration + 1}/{max_iterations}")
 
             result = await self.complete(
                 messages=conversation,
-                tools=tool_schemas if tool_schemas else None,
+                tools=tool_schemas,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
@@ -253,38 +332,17 @@ class LLMClient:
                 func_args_raw = tc["function"]["arguments"]
                 total_tool_calls += 1
 
-                tool = tool_map.get(func_name)
-                if tool is None:
-                    tool_result = f"Error: Unknown tool '{func_name}'"
-                else:
-                    try:
-                        parsed_args = tool.parse_arguments(func_args_raw)
-                        tool_result = await tool.safe_execute(**parsed_args)
+                tool_result = await self._execute_tool(
+                    func_name, func_args_raw, tool_map, sources
+                )
 
-                        # Extract URLs from search results as sources
-                        if func_name == "web_search" and "URL:" in tool_result:
-                            for line in tool_result.split("\n"):
-                                if line.strip().startswith("URL:"):
-                                    url = line.strip().replace("URL: ", "").strip()
-                                    if url and url not in sources:
-                                        sources.append(url)
-                        elif func_name == "read_url":
-                            url_arg = parsed_args.get("url", "")
-                            if url_arg and url_arg not in sources:
-                                sources.append(url_arg)
-
-                    except Exception as e:
-                        tool_result = f"Error executing {func_name}: {str(e)}"
-                        logger.warning(f"Tool execution error: {e}")
-
-                # Add tool result to conversation
                 conversation.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
                     "content": tool_result,
                 })
 
-        # Exhausted iterations — ask for final answer
+        # Exhausted iterations — force a final answer
         conversation.append({
             "role": "user",
             "content": (
@@ -295,6 +353,7 @@ class LLMClient:
 
         final_result = await self.complete(
             messages=conversation,
+            tools=None,
             temperature=temperature,
             max_tokens=max_tokens,
         )
@@ -306,3 +365,279 @@ class LLMClient:
             sources=sources,
             total_tokens=total_tokens,
         )
+
+    async def _tool_loop_prompt_based(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[BaseTool],
+        max_iterations: int,
+        temperature: float | None,
+        max_tokens: int | None,
+    ) -> ToolLoopResult:
+        """
+        Tool loop for models without native function calling (e.g., Ollama).
+
+        Instead of passing tools to LiteLLM (which injects broken JSON mode),
+        we embed tool descriptions in the system prompt and parse tool calls
+        from the model's text output.
+        """
+        tool_map = {t.name: t for t in tools}
+
+        # Build tool description block for the prompt
+        tool_desc_parts = []
+        for t in tools:
+            schema = t.to_openai_schema()
+            func = schema["function"]
+            params = func.get("parameters", {}).get("properties", {})
+            required = func.get("parameters", {}).get("required", [])
+
+            param_lines = []
+            for pname, pinfo in params.items():
+                req_mark = " (required)" if pname in required else " (optional)"
+                param_lines.append(
+                    f"    - {pname}{req_mark}: {pinfo.get('description', '')}"
+                )
+
+            tool_desc_parts.append(
+                f"- **{func['name']}**: {func.get('description', '')}\n"
+                f"  Parameters:\n" + "\n".join(param_lines)
+            )
+
+        tool_instructions = (
+            "\n\n## AVAILABLE TOOLS\n\n"
+            "You have access to these tools. To call a tool, respond with ONLY "
+            "a JSON block like this:\n\n"
+            '```json\n{"name": "tool_name", "arguments": {"param": "value"}}\n```\n\n'
+            "After calling a tool, you will receive the result and can then "
+            "answer the question. If you do NOT need a tool, respond with your "
+            "answer directly as plain text (no JSON).\n\n"
+            + "\n".join(tool_desc_parts)
+        )
+
+        # Inject tool descriptions into the system prompt
+        conversation = list(messages)
+        if conversation and conversation[0]["role"] == "system":
+            conversation[0] = {
+                "role": "system",
+                "content": conversation[0]["content"] + tool_instructions,
+            }
+        else:
+            conversation.insert(0, {
+                "role": "system",
+                "content": "You are a helpful assistant." + tool_instructions,
+            })
+
+        total_tool_calls = 0
+        total_tokens = 0
+        sources: list[str] = []
+
+        for iteration in range(max_iterations):
+            logger.debug(
+                f"Prompt-based tool loop iteration {iteration + 1}/{max_iterations}"
+            )
+
+            # No tools passed to LiteLLM — we handle it ourselves
+            result = await self.complete(
+                messages=conversation,
+                tools=None,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+
+            total_tokens += result.usage.get("total_tokens", 0)
+            content = result.content.strip()
+
+            logger.debug(
+                f"Prompt-based loop got content "
+                f"(len={len(content)}): {repr(content[:200])}"
+            )
+
+            # Try to parse a tool call from the response
+            tool_schemas = [t.to_openai_schema() for t in tools]
+            parsed_calls = self._parse_tool_calls_from_content(
+                content, tool_schemas
+            )
+
+            logger.debug(
+                f"Parsed {len(parsed_calls)} tool call(s) from content"
+            )
+
+            if not parsed_calls:
+                # No tool call — this is the final answer
+                return ToolLoopResult(
+                    final_answer=content,
+                    tool_calls_made=total_tool_calls,
+                    sources=sources,
+                    total_tokens=total_tokens,
+                )
+
+            # Execute the tool call(s)
+            logger.info(
+                f"Parsed {len(parsed_calls)} tool call(s) from model output "
+                f"(prompt-based fallback)"
+            )
+
+            tool_results_text: list[str] = []
+            for tc in parsed_calls:
+                func_name = tc["function"]["name"]
+                func_args_raw = tc["function"]["arguments"]
+                total_tool_calls += 1
+
+                tool_result = await self._execute_tool(
+                    func_name, func_args_raw, tool_map, sources
+                )
+
+                tool_results_text.append(
+                    f"[Tool: {func_name}] Result:\n{tool_result}"
+                )
+
+            # Feed tool results back as a user message
+            conversation.append({
+                "role": "assistant",
+                "content": content,
+            })
+            conversation.append({
+                "role": "user",
+                "content": (
+                    "Here are the tool results:\n\n"
+                    + "\n\n".join(tool_results_text)
+                    + "\n\nNow provide your final answer based on these results. "
+                    "Respond with plain text (no JSON)."
+                ),
+            })
+
+        # Exhausted iterations — force a final answer
+        conversation.append({
+            "role": "user",
+            "content": (
+                "You have used all available tool calls. Please provide your "
+                "final answer as plain text based on the information gathered."
+            ),
+        })
+
+        final_result = await self.complete(
+            messages=conversation,
+            tools=None,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        total_tokens += final_result.usage.get("total_tokens", 0)
+
+        return ToolLoopResult(
+            final_answer=final_result.content,
+            tool_calls_made=total_tool_calls,
+            sources=sources,
+            total_tokens=total_tokens,
+        )
+
+    async def _execute_tool(
+        self,
+        func_name: str,
+        func_args_raw: str,
+        tool_map: dict[str, BaseTool],
+        sources: list[str],
+    ) -> str:
+        """Execute a single tool call and extract sources."""
+        tool = tool_map.get(func_name)
+        if tool is None:
+            return f"Error: Unknown tool '{func_name}'"
+
+        try:
+            parsed_args = tool.parse_arguments(func_args_raw)
+            tool_result = await tool.safe_execute(**parsed_args)
+
+            # Extract URLs from search results as sources
+            if func_name == "web_search" and "URL:" in tool_result:
+                for line in tool_result.split("\n"):
+                    if line.strip().startswith("URL:"):
+                        url = line.strip().replace("URL: ", "").strip()
+                        if url and url not in sources:
+                            sources.append(url)
+            elif func_name == "read_url":
+                url_arg = parsed_args.get("url", "")
+                if url_arg and url_arg not in sources:
+                    sources.append(url_arg)
+
+            return tool_result
+
+        except Exception as e:
+            logger.warning(f"Tool execution error: {e}")
+            return f"Error executing {func_name}: {str(e)}"
+
+    @staticmethod
+    def _parse_tool_calls_from_content(
+        content: str,
+        tools: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """
+        Parse tool calls from model text output.
+
+        Used for models that don't support native function calling.
+        Detects JSON tool call patterns in the content like:
+        {"name": "web_search", "arguments": {"query": "..."}}
+        """
+        # Collect valid tool names for validation
+        valid_names = set()
+        for t in tools:
+            if isinstance(t, dict) and "function" in t:
+                valid_names.add(t["function"]["name"])
+
+        if not valid_names:
+            return []
+
+        candidates = []
+
+        # Strategy 1: Content is pure JSON
+        try:
+            data = json.loads(content)
+            if isinstance(data, dict):
+                candidates.append(data)
+            elif isinstance(data, list):
+                candidates.extend(data)
+        except json.JSONDecodeError:
+            pass
+
+        # Strategy 2: JSON inside a code block
+        if not candidates:
+            blocks = re.findall(r"```(?:json)?\s*\n?([\s\S]*?)\n?```", content)
+            for block in blocks:
+                try:
+                    data = json.loads(block.strip())
+                    if isinstance(data, dict):
+                        candidates.append(data)
+                    elif isinstance(data, list):
+                        candidates.extend(data)
+                except json.JSONDecodeError:
+                    continue
+
+        # Strategy 3: Find JSON objects embedded in text
+        if not candidates:
+            for match in re.finditer(r"\{[^{}]*\}", content):
+                try:
+                    data = json.loads(match.group())
+                    if isinstance(data, dict):
+                        candidates.append(data)
+                except json.JSONDecodeError:
+                    continue
+
+        # Validate and convert candidates to tool call format
+        tool_calls = []
+        for obj in candidates:
+            name = obj.get("name", "")
+            arguments = obj.get("arguments", {})
+
+            if name in valid_names:
+                call_id = f"fallback_{uuid.uuid4().hex[:8]}"
+                tool_calls.append({
+                    "id": call_id,
+                    "function": {
+                        "name": name,
+                        "arguments": (
+                            json.dumps(arguments)
+                            if isinstance(arguments, dict)
+                            else str(arguments)
+                        ),
+                    },
+                })
+
+        return tool_calls
