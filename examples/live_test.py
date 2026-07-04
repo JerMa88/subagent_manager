@@ -48,7 +48,7 @@ async def main():
     log(header)
 
     manager = SubAgentManager(
-        model="ollama/gemma4:e2b-mlx",
+        model="ollama/ornith",
         subagents=[
             SubAgentConfig(
                 name="researcher",
