@@ -373,10 +373,13 @@ class LLMClient:
                     subtask_id=subtask_id, agent_name=agent_name,
                     data={
                         "iteration": iteration,
-                        "tokens": result.usage.get("total_tokens", 0),
+                        "tokens": getattr(result.usage, "total_tokens", 0) or 0,
+                        "prompt_tokens": getattr(result.usage, "prompt_tokens", 0) or 0,
+                        "completion_tokens": getattr(result.usage, "completion_tokens", 0) or 0,
                         "finish_reason": result.finish_reason,
                         "duration_ms": duration_ms,
                         "has_tool_calls": bool(result.tool_calls),
+                        "message_content": result.content,
                     },
                 ))
 
@@ -584,9 +587,12 @@ class LLMClient:
                     subtask_id=subtask_id, agent_name=agent_name,
                     data={
                         "iteration": iteration,
-                        "tokens": result.usage.get("total_tokens", 0),
+                        "tokens": getattr(result.usage, "total_tokens", 0) or 0,
+                        "prompt_tokens": getattr(result.usage, "prompt_tokens", 0) or 0,
+                        "completion_tokens": getattr(result.usage, "completion_tokens", 0) or 0,
                         "finish_reason": result.finish_reason,
                         "duration_ms": duration_ms,
+                        "message_content": content,
                     },
                 ))
 

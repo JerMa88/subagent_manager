@@ -97,6 +97,15 @@ export default function StatusBar() {
         </span>
       </div>
 
+      {/* New Run Button */}
+      <button
+        className="btn btn-primary btn-sm"
+        onClick={useStore((s) => s.startNewRun)}
+        title="Start New Run"
+      >
+        + New
+      </button>
+
       {/* Cancel button */}
       {isActive && (
         <button

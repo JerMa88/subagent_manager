@@ -13,36 +13,58 @@ export default function ConfigPanel() {
   const config = useStore((s) => s.config);
   const updateConfig = useStore((s) => s.updateConfig);
 
+  const [models, setModels] = React.useState([]);
+
+  React.useEffect(() => {
+    if (isOpen && models.length === 0) {
+      fetch('http://localhost:8000/api/models')
+        .then((r) => r.json())
+        .then((data) => setModels(data))
+        .catch((err) => console.error('Failed to load models:', err));
+    }
+  }, [isOpen, models.length]);
+
   if (!isOpen) return null;
 
-  const field = (label, key, type = 'text', options = null) => (
-    <div style={{ marginBottom: 16 }}>
-      <label style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, fontWeight: 500 }}>
-        {label}
-      </label>
-      {options ? (
-        <select
-          id={`config-${key}`}
-          className="input"
-          value={config[key] || ''}
-          onChange={(e) => updateConfig({ [key]: e.target.value })}
-          style={{ padding: '8px 12px' }}
-        >
-          {options.map((o) => <option key={o} value={o}>{o}</option>)}
-        </select>
-      ) : (
-        <input
-          id={`config-${key}`}
-          type={type}
-          className="input"
-          value={config[key] || ''}
-          onChange={(e) => updateConfig({ [key]: e.target.value || undefined })}
-          placeholder={key}
-          style={{ padding: '8px 12px' }}
-        />
-      )}
-    </div>
-  );
+  const field = (label, key, type = 'text', options = null, datalist = null) => {
+    const listId = datalist ? `list-${key}` : undefined;
+    return (
+      <div style={{ marginBottom: 16 }}>
+        <label style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, fontWeight: 500 }}>
+          {label}
+        </label>
+        {options ? (
+          <select
+            id={`config-${key}`}
+            className="input"
+            value={config[key] || ''}
+            onChange={(e) => updateConfig({ [key]: e.target.value })}
+            style={{ padding: '8px 12px' }}
+          >
+            {options.map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
+        ) : (
+          <>
+            <input
+              id={`config-${key}`}
+              type={type}
+              className="input"
+              value={config[key] || ''}
+              onChange={(e) => updateConfig({ [key]: e.target.value || undefined })}
+              placeholder={key}
+              list={listId}
+              style={{ padding: '8px 12px' }}
+            />
+            {datalist && (
+              <datalist id={listId}>
+                {datalist.map((o) => <option key={o} value={o} />)}
+              </datalist>
+            )}
+          </>
+        )}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -75,8 +97,8 @@ export default function ConfigPanel() {
           <button className="btn btn-ghost btn-sm" onClick={toggle}>✕</button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: 'var(--sp-lg)' }}>
-          {field('Model', 'model')}
-          {field('Orchestrator Model (override)', 'orchestrator_model')}
+          {field('Model', 'model', 'text', models.length > 0 ? models : ['ollama/ornith:latest'])}
+          {field('Orchestrator Model (override)', 'orchestrator_model', 'text', models.length > 0 ? [''].concat(models) : [''])}
           {field('Strategy', 'strategy', 'text', STRATEGIES)}
           {field('Max Subtasks', 'max_subtasks', 'number')}
           {field('API Key', 'api_key', 'password')}

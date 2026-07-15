@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────
 
 _default_config: dict[str, Any] = {
-    "model": "ollama/qwen3",
+    "model": "ollama/ornith:latest",
     "orchestrator_model": None,
     "strategy": "adaptive",
     "max_subtasks": 10,
@@ -109,6 +109,30 @@ async def update_config(update: ConfigUpdate) -> dict[str, Any]:
     for key, val in update.model_dump(exclude_none=True).items():
         _default_config[key] = val
     return _default_config
+
+
+@app.get("/api/models")
+async def list_models() -> list[str]:
+    """Fetch locally available models from Ollama."""
+    import urllib.request
+    import json
+    try:
+        req = urllib.request.Request("http://localhost:11434/api/tags")
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            models = [f"ollama/{m['name']}" for m in data.get("models", [])]
+            # Always ensure some common fallbacks are present
+            fallbacks = ["gpt-4o-mini", "anthropic/claude-3-5-sonnet-20240620", "gemini/gemini-2.5-flash"]
+            return models + fallbacks
+    except Exception as e:
+        logger.warning(f"Could not fetch Ollama models: {e}")
+        return [
+            "ollama/ornith:latest",
+            "ollama/gemma4:e2b-mlx",
+            "gpt-4o-mini",
+            "anthropic/claude-3-5-sonnet-20240620",
+            "gemini/gemini-2.5-flash"
+        ]
 
 
 # ─────────────────────────────────────────────────────────────────────

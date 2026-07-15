@@ -44,7 +44,7 @@ export const useStore = create((set, get) => ({
 
   // Config
   config: {
-    model: 'ollama/qwen3',
+    model: 'ollama/ornith:latest',
     orchestrator_model: '',
     strategy: 'adaptive',
     max_subtasks: 10,
@@ -58,9 +58,10 @@ export const useStore = create((set, get) => ({
   isConfigPanelOpen: false,
   isPlanEditorOpen: false,
 
-  // Synthesis
+  // Synthesis & Errors
   synthesisResult: null,
   synthesisStreaming: false,
+  globalError: null,
 
   // Run history (from SQLite)
   runs: [],
@@ -84,6 +85,20 @@ export const useStore = create((set, get) => ({
     selectedSubtaskId: null,
     synthesisResult: null,
     synthesisStreaming: false,
+    globalError: null,
+  }),
+
+  startNewRun: () => set({
+    currentRunId: null,
+    goal: '',
+    status: 'idle',
+    plan: [],
+    subtasks: {},
+    selectedSubtaskId: null,
+    synthesisResult: null,
+    synthesisStreaming: false,
+    wsConnected: false,
+    globalError: null,
   }),
 
   // ─── Event handler: dispatches incoming WS events to store ─────────────
@@ -166,7 +181,15 @@ export const useStore = create((set, get) => ({
           }
           patch.subtasks = {
             ...state.subtasks,
-            [subtask_id]: { ...prev, toolCalls: tcs, toolCallsMade: prev.toolCallsMade + 1 },
+            [subtask_id]: { 
+              ...prev, 
+              toolCalls: tcs, 
+              toolCallsMade: prev.toolCallsMade + 1,
+              messages: [
+                ...prev.messages,
+                { role: 'tool', tool_name: data.tool_name, content: data.result, ts: timestamp }
+              ]
+            },
           };
           break;
         }
@@ -175,11 +198,20 @@ export const useStore = create((set, get) => ({
           if (subtask_id == null) break;
           const prev = state.subtasks[subtask_id];
           if (!prev) break;
+          
+          const newMessages = [...prev.messages];
+          if (data.message_content) {
+            newMessages.push({ role: 'assistant', content: data.message_content, ts: timestamp });
+          }
+          
           patch.subtasks = {
             ...state.subtasks,
             [subtask_id]: {
               ...prev,
               tokens: prev.tokens + (data.tokens || 0),
+              promptTokens: (prev.promptTokens || 0) + (data.prompt_tokens || 0),
+              completionTokens: (prev.completionTokens || 0) + (data.completion_tokens || 0),
+              messages: newMessages,
             },
           };
           break;
@@ -270,6 +302,7 @@ export const useStore = create((set, get) => ({
         case 'orchestration_failed':
           patch.status = 'failed';
           patch.synthesisStreaming = false;
+          patch.globalError = data.error || 'Orchestration failed with no error details.';
           break;
 
         case 'orchestration_cancelled':
@@ -346,34 +379,27 @@ export const useStore = create((set, get) => ({
     try {
       const res = await fetch(`${API}/api/runs/${runId}`);
       const data = await res.json();
-      // Replay events to rebuild subtask state
-      const { plan, result, events = [] } = data;
+      
+      const { plan, events = [] } = data;
       const subtasks = {};
       (plan || []).forEach((raw) => { subtasks[raw.id] = makeSubtask(raw); });
 
-      // Apply persisted results
-      if (result?.subtask_results) {
-        result.subtask_results.forEach((r) => {
-          const st = Object.values(subtasks).find((s) => s.task === r.task);
-          if (st) {
-            Object.assign(st, {
-              status: r.success ? 'completed' : 'failed',
-              answer: r.answer,
-              sources: r.sources,
-              error: r.error,
-            });
-          }
-        });
-      }
-
+      // Reset state to this run's initial configuration
       set({
         currentRunId: runId,
         goal: data.goal,
         status: data.status,
         plan: plan || [],
         subtasks,
-        synthesisResult: result?.answer || null,
+        synthesisResult: data.result?.answer || null,
+        globalError: data.result?.error || null,
+        selectedSubtaskId: null,
       });
+
+      // Replay events to rebuild full state (tool calls, messages)
+      const handleEvent = get().handleEvent;
+      events.forEach((e) => handleEvent(e));
+
     } catch (e) {
       console.error('loadRun failed:', e);
     }

@@ -9,6 +9,32 @@ export default function SynthesisView() {
   const result = useStore((s) => s.synthesisResult);
   const streaming = useStore((s) => s.synthesisStreaming);
   const status = useStore((s) => s.status);
+  const error = useStore((s) => s.globalError);
+
+  if (error) {
+    return (
+      <div
+        className="animate-fade-in"
+        style={{
+          margin: 'var(--sp-md)',
+          padding: 'var(--sp-lg)',
+          background: 'var(--bg-glass)',
+          backdropFilter: 'blur(16px)',
+          border: '1px solid var(--danger)',
+          borderRadius: 'var(--radius-lg)',
+          boxShadow: 'var(--glow-danger)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+          <span style={{ color: 'var(--danger)', fontSize: 18 }}>✕</span>
+          <h2 style={{ color: 'var(--danger)', fontWeight: 700 }}>Run Failed</h2>
+        </div>
+        <div style={{ color: 'var(--danger)', fontSize: 14, whiteSpace: 'pre-wrap' }}>
+          {error}
+        </div>
+      </div>
+    );
+  }
 
   if (!result && !streaming && status !== 'synthesizing') return null;
 

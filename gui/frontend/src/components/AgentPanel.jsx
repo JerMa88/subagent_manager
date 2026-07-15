@@ -48,7 +48,7 @@ export default function AgentPanel() {
     );
   }
 
-  const { agent_name, status, task, answer, toolCalls, messages, sources, tokens, error } = subtask;
+  const { agent_name, status, task, answer, toolCalls, messages, sources, tokens, promptTokens, completionTokens, error } = subtask;
   const isRunning = status === 'running';
   const isPaused = status === 'paused';
   const isActive = isRunning || isPaused;
@@ -111,8 +111,18 @@ export default function AgentPanel() {
             ✕
           </button>
         </div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4 }}>
-          #{selectedId} · {tokens > 0 ? `${tokens.toLocaleString()} tokens` : 'no tokens yet'}
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <span>#{selectedId}</span>
+          {tokens > 0 ? (
+            <>
+              <span>· {tokens.toLocaleString()} tok</span>
+              <span style={{ color: 'var(--text-secondary)' }}>
+                ({promptTokens?.toLocaleString() || 0} ctx / {completionTokens?.toLocaleString() || 0} gen)
+              </span>
+            </>
+          ) : (
+            <span>· no tokens yet</span>
+          )}
         </div>
         <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
           {task}
