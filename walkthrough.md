@@ -102,71 +102,71 @@ To enable real-time UI without breaking the core library's API, an isolated even
 ### Core Package (`src/subagent_manager/`)
 | File | Purpose |
 |------|---------|
-| [__init__.py](file:///Users/zma/Documents/programs/subagent_manager/src/subagent_manager/__init__.py) | Public API exports |
-| [manager.py](file:///Users/zma/Documents/programs/subagent_manager/src/subagent_manager/manager.py) | Main orchestrator (plan → delegate → synthesize) |
-| [subagent.py](file:///Users/zma/Documents/programs/subagent_manager/src/subagent_manager/subagent.py) | Isolated worker execution |
-| [llm_client.py](file:///Users/zma/Documents/programs/subagent_manager/src/subagent_manager/llm_client.py) | Universal LLM client via LiteLLM |
+| [__init__.py](src/subagent_manager/__init__.py) | Public API exports |
+| [manager.py](src/subagent_manager/manager.py) | Main orchestrator (plan → delegate → synthesize) |
+| [subagent.py](src/subagent_manager/subagent.py) | Isolated worker execution |
+| [llm_client.py](src/subagent_manager/llm_client.py) | Universal LLM client via LiteLLM |
 
 ### Tools (`src/subagent_manager/tools/`)
 | File | Purpose |
 |------|---------|
-| [base.py](file:///Users/zma/Documents/programs/subagent_manager/src/subagent_manager/tools/base.py) | Abstract tool with OpenAI schema generation |
-| [web_search.py](file:///Users/zma/Documents/programs/subagent_manager/src/subagent_manager/tools/web_search.py) | DuckDuckGo search (no API key) |
-| [url_reader.py](file:///Users/zma/Documents/programs/subagent_manager/src/subagent_manager/tools/url_reader.py) | HTML → markdown content extraction |
-| [python_exec.py](file:///Users/zma/Documents/programs/subagent_manager/src/subagent_manager/tools/python_exec.py) | Sandboxed Python with timeout |
-| [file_reader.py](file:///Users/zma/Documents/programs/subagent_manager/src/subagent_manager/tools/file_reader.py) | Local file reading with sandboxing |
+| [base.py](src/subagent_manager/tools/base.py) | Abstract tool with OpenAI schema generation |
+| [web_search.py](src/subagent_manager/tools/web_search.py) | DuckDuckGo search (no API key) |
+| [url_reader.py](src/subagent_manager/tools/url_reader.py) | HTML → markdown content extraction |
+| [python_exec.py](src/subagent_manager/tools/python_exec.py) | Sandboxed Python with timeout |
+| [file_reader.py](src/subagent_manager/tools/file_reader.py) | Local file reading with sandboxing |
 
 ### Strategies (`src/subagent_manager/strategies/`)
 | File | Purpose |
 |------|---------|
-| [base.py](file:///Users/zma/Documents/programs/subagent_manager/src/subagent_manager/strategies/base.py) | Base strategy + ExecutionPlan + SubtaskDef |
-| [parallel.py](file:///Users/zma/Documents/programs/subagent_manager/src/subagent_manager/strategies/parallel.py) | Wave-based parallel execution |
-| [sequential.py](file:///Users/zma/Documents/programs/subagent_manager/src/subagent_manager/strategies/sequential.py) | Sequential chaining |
-| [adaptive.py](file:///Users/zma/Documents/programs/subagent_manager/src/subagent_manager/strategies/adaptive.py) | Auto-selects best strategy |
+| [base.py](src/subagent_manager/strategies/base.py) | Base strategy + ExecutionPlan + SubtaskDef |
+| [parallel.py](src/subagent_manager/strategies/parallel.py) | Wave-based parallel execution |
+| [sequential.py](src/subagent_manager/strategies/sequential.py) | Sequential chaining |
+| [adaptive.py](src/subagent_manager/strategies/adaptive.py) | Auto-selects best strategy |
 
 ### Prompts (`src/subagent_manager/prompts/`)
 | File | Purpose |
 |------|---------|
-| [orchestrator.py](file:///Users/zma/Documents/programs/subagent_manager/src/subagent_manager/prompts/orchestrator.py) | Planning + synthesis prompts |
-| [subagent.py](file:///Users/zma/Documents/programs/subagent_manager/src/subagent_manager/prompts/subagent.py) | Worker grounding prompts |
+| [orchestrator.py](src/subagent_manager/prompts/orchestrator.py) | Planning + synthesis prompts |
+| [subagent.py](src/subagent_manager/prompts/subagent.py) | Worker grounding prompts |
 
 ### Tests (`tests/`)
 | File | Tests |
 |------|-------|
-| [test_manager.py](file:///Users/zma/Documents/programs/subagent_manager/tests/test_manager.py) | 16 tests: init, plan parsing, default agents |
-| [test_subagent.py](file:///Users/zma/Documents/programs/subagent_manager/tests/test_subagent.py) | 9 tests: config, results, model overrides |
-| [test_strategies.py](file:///Users/zma/Documents/programs/subagent_manager/tests/test_strategies.py) | 10 tests: plan analysis, parallel/seq/adaptive |
-| [test_tools.py](file:///Users/zma/Documents/programs/subagent_manager/tests/test_tools.py) | 19 tests: schemas, execution, security, truncation |
-| [test_llm_client.py](file:///Users/zma/Documents/programs/subagent_manager/tests/test_llm_client.py) | 6 tests: init, data classes, mock tools |
+| [test_manager.py](tests/test_manager.py) | 16 tests: init, plan parsing, default agents |
+| [test_subagent.py](tests/test_subagent.py) | 9 tests: config, results, model overrides |
+| [test_strategies.py](tests/test_strategies.py) | 10 tests: plan analysis, parallel/seq/adaptive |
+| [test_tools.py](tests/test_tools.py) | 19 tests: schemas, execution, security, truncation |
+| [test_llm_client.py](tests/test_llm_client.py) | 6 tests: init, data classes, mock tools |
 
 ### Examples (`examples/`)
 | File | Purpose |
 |------|---------|
-| [basic_usage.py](file:///Users/zma/Documents/programs/subagent_manager/examples/basic_usage.py) | Minimal quickstart |
-| [web_research.py](file:///Users/zma/Documents/programs/subagent_manager/examples/web_research.py) | Grounded web research |
-| [code_review.py](file:///Users/zma/Documents/programs/subagent_manager/examples/code_review.py) | Code analysis workflow |
-| [ollama_edge.py](file:///Users/zma/Documents/programs/subagent_manager/examples/ollama_edge.py) | Edge deployment with hybrid models |
+| [basic_usage.py](examples/basic_usage.py) | Minimal quickstart |
+| [web_research.py](examples/web_research.py) | Grounded web research |
+| [code_review.py](examples/code_review.py) | Code analysis workflow |
+| [ollama_edge.py](examples/ollama_edge.py) | Edge deployment with hybrid models |
 
 ### GUI Backend (`gui/backend/`)
 | File | Purpose |
 |------|---------|
-| [server.py](file:///Users/zma/Documents/programs/subagent_manager/gui/backend/server.py) | FastAPI app, REST/WS routes |
-| [db.py](file:///Users/zma/Documents/programs/subagent_manager/gui/backend/db.py) | SQLite persistence layer |
-| [run_manager.py](file:///Users/zma/Documents/programs/subagent_manager/gui/backend/run_manager.py) | SubAgentManager background task orchestrator |
+| [server.py](gui/backend/server.py) | FastAPI app, REST/WS routes |
+| [db.py](gui/backend/db.py) | SQLite persistence layer |
+| [run_manager.py](gui/backend/run_manager.py) | SubAgentManager background task orchestrator |
 
 ### GUI Frontend (`gui/frontend/src/`)
 | File | Purpose |
 |------|---------|
-| [stores/useStore.js](file:///Users/zma/Documents/programs/subagent_manager/gui/frontend/src/stores/useStore.js) | Zustand state engine |
-| [hooks/useWebSocket.js](file:///Users/zma/Documents/programs/subagent_manager/gui/frontend/src/hooks/useWebSocket.js) | Real-time event listener |
-| [components/*.jsx](file:///Users/zma/Documents/programs/subagent_manager/gui/frontend/src/components) | 11 React components (DagView, AgentPanel, etc.) |
-| [index.css](file:///Users/zma/Documents/programs/subagent_manager/gui/frontend/src/index.css) | Custom glassmorphism design system |
+| [stores/useStore.js](gui/frontend/src/stores/useStore.js) | Zustand state engine |
+| [hooks/useWebSocket.js](gui/frontend/src/hooks/useWebSocket.js) | Real-time event listener |
+| [components/*.jsx](gui/frontend/src/components) | 11 React components (DagView, AgentPanel, etc.) |
+| [index.css](gui/frontend/src/index.css) | Custom glassmorphism design system |
 
 ### Config
 | File | Purpose |
 |------|---------|
-| [pyproject.toml](file:///Users/zma/Documents/programs/subagent_manager/pyproject.toml) | Package config, deps, tool configs |
-| [README.md](file:///Users/zma/Documents/programs/subagent_manager/README.md) | Full documentation with theory, API, examples |
+| [pyproject.toml](pyproject.toml) | Package config, deps, tool configs |
+| [README.md](README.md) | Full documentation with theory, API, examples |
 
 ## Verification Results
 
