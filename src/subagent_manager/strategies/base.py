@@ -7,10 +7,13 @@ execution strategies (parallel, sequential, adaptive).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any
 
+from subagent_manager.events import EventBus
 from subagent_manager.subagent import SubAgent, SubAgentResult
 
 logger = logging.getLogger(__name__)
@@ -77,6 +80,9 @@ class BaseStrategy(ABC):
         plan: ExecutionPlan,
         agents: dict[str, SubAgent],
         completed_results: dict[int, SubAgentResult] | None = None,
+        event_bus: EventBus | None = None,
+        pause_events: dict[int, asyncio.Event] | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> list[SubAgentResult]:
         """
         Execute the plan using the available agents.
@@ -85,6 +91,9 @@ class BaseStrategy(ABC):
             plan: The execution plan with subtask definitions.
             agents: Map of agent name -> SubAgent instance.
             completed_results: Previously completed results (for resumption).
+            event_bus: Optional event bus for GUI streaming.
+            pause_events: Per-subtask asyncio.Event for pause/resume control.
+            cancel_event: Global cancel signal for entire orchestration.
 
         Returns:
             List of SubAgentResult, one per subtask.
@@ -125,6 +134,9 @@ class BaseStrategy(ABC):
         subtask: SubtaskDef,
         agents: dict[str, SubAgent],
         results: dict[int, SubAgentResult],
+        event_bus: EventBus | None = None,
+        pause_events: dict[int, asyncio.Event] | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> SubAgentResult:
         """Execute a single subtask with the appropriate agent."""
         agent = agents.get(subtask.agent_name)
@@ -138,4 +150,12 @@ class BaseStrategy(ABC):
             agent = next(iter(agents.values()))
 
         context = self._build_dependency_context(subtask, results)
-        return await agent.execute(task=subtask.task, context=context)
+        pause_event = pause_events.get(subtask.id) if pause_events else None
+        return await agent.execute(
+            task=subtask.task,
+            context=context,
+            event_bus=event_bus,
+            subtask_id=subtask.id,
+            pause_event=pause_event,
+            cancel_event=cancel_event,
+        )

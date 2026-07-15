@@ -8,8 +8,10 @@ task depends on the previous one's output.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
+from subagent_manager.events import EventBus
 from subagent_manager.strategies.base import BaseStrategy, ExecutionPlan
 from subagent_manager.subagent import SubAgent, SubAgentResult
 
@@ -29,6 +31,9 @@ class SequentialStrategy(BaseStrategy):
         plan: ExecutionPlan,
         agents: dict[str, SubAgent],
         completed_results: dict[int, SubAgentResult] | None = None,
+        event_bus: EventBus | None = None,
+        pause_events: dict[int, asyncio.Event] | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> list[SubAgentResult]:
         """Execute subtasks one by one in order."""
         results: dict[int, SubAgentResult] = dict(completed_results or {})
@@ -43,7 +48,12 @@ class SequentialStrategy(BaseStrategy):
                 f"({subtask.agent_name})"
             )
 
-            result = await self._execute_subtask(subtask, agents, results)
+            result = await self._execute_subtask(
+                subtask, agents, results,
+                event_bus=event_bus,
+                pause_events=pause_events,
+                cancel_event=cancel_event,
+            )
             results[subtask.id] = result
             all_results.append(result)
 

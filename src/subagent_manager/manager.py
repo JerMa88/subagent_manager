@@ -22,6 +22,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from subagent_manager.events import Event, EventBus, EventType
 from subagent_manager.llm_client import LLMClient
 from subagent_manager.prompts.orchestrator import (
     build_orchestrator_system_prompt,
@@ -189,7 +190,14 @@ class SubAgentManager:
             )
         return strategies[name]
 
-    async def run(self, goal: str, context: str = "") -> ManagerResult:
+    async def run(
+        self,
+        goal: str,
+        context: str = "",
+        event_bus: EventBus | None = None,
+        pause_events: dict[int, asyncio.Event] | None = None,
+        cancel_event: asyncio.Event | None = None,
+    ) -> ManagerResult:
         """
         Execute a complex goal through subagent orchestration.
 
@@ -201,11 +209,20 @@ class SubAgentManager:
         Args:
             goal: The high-level goal or question from the user.
             context: Optional additional context for the orchestrator.
+            event_bus: Optional event bus for GUI real-time streaming.
+            pause_events: Per-subtask asyncio.Event for pause/resume.
+            cancel_event: Global cancel signal.
 
         Returns:
             ManagerResult with the final answer and full metadata.
         """
         logger.info(f"Starting orchestration for goal: {goal[:100]}...")
+
+        if event_bus:
+            event_bus.emit(Event(
+                type=EventType.ORCHESTRATION_STARTED,
+                data={"goal": goal, "model": self.model},
+            ))
 
         # Step 1: Plan — decompose into subtasks
         plan, raw_plan = await self._plan(goal, context)
@@ -220,11 +237,34 @@ class SubAgentManager:
 
         logger.info(f"Plan created with {len(plan.subtasks)} subtasks")
 
+        if event_bus:
+            event_bus.emit(Event(
+                type=EventType.PLAN_CREATED,
+                data={"plan": raw_plan, "subtask_count": len(plan.subtasks)},
+            ))
+
         # Step 2: Execute — run subtasks via strategy
-        subtask_results = await self.strategy.execute(plan, self.agents)
+        subtask_results = await self.strategy.execute(
+            plan, self.agents,
+            event_bus=event_bus,
+            pause_events=pause_events,
+            cancel_event=cancel_event,
+        )
 
         # Step 3: Synthesize — combine results into final answer
+        if event_bus:
+            event_bus.emit(Event(
+                type=EventType.SYNTHESIS_STARTED,
+                data={"subtask_count": len(subtask_results)},
+            ))
+
         final_answer = await self._synthesize(goal, subtask_results)
+
+        if event_bus:
+            event_bus.emit(Event(
+                type=EventType.SYNTHESIS_COMPLETED,
+                data={"answer_length": len(final_answer)},
+            ))
 
         # Aggregate metadata
         all_sources: list[str] = []
@@ -237,7 +277,7 @@ class SubAgentManager:
                 if s not in all_sources:
                     all_sources.append(s)
 
-        return ManagerResult(
+        result = ManagerResult(
             answer=final_answer,
             subtask_results=subtask_results,
             plan=raw_plan,
@@ -245,6 +285,18 @@ class SubAgentManager:
             total_tool_calls=total_tool_calls,
             sources=all_sources,
         )
+
+        if event_bus:
+            event_bus.emit(Event(
+                type=EventType.ORCHESTRATION_COMPLETED,
+                data={
+                    "total_tokens": total_tokens,
+                    "total_tool_calls": total_tool_calls,
+                    "sources_count": len(all_sources),
+                },
+            ))
+
+        return result
 
     def run_sync(self, goal: str, context: str = "") -> ManagerResult:
         """
@@ -274,6 +326,53 @@ class SubAgentManager:
                 return future.result()
         else:
             return asyncio.run(self.run(goal, context))
+
+    async def run_with_events(
+        self,
+        goal: str,
+        context: str = "",
+        event_bus: EventBus | None = None,
+        pause_events: dict[int, asyncio.Event] | None = None,
+        cancel_event: asyncio.Event | None = None,
+    ) -> ManagerResult:
+        """
+        Execute a goal with event streaming support for the GUI.
+
+        Identical to run() but explicitly exposes event_bus, pause_events,
+        and cancel_event for the FastAPI backend to wire up.
+
+        Args:
+            goal: The high-level goal or question.
+            context: Optional additional context.
+            event_bus: Event bus to emit real-time events to.
+            pause_events: Dict mapping subtask_id -> asyncio.Event for pause/resume.
+            cancel_event: Global cancel signal (set to cancel entire orchestration).
+
+        Returns:
+            ManagerResult with the final answer and metadata.
+        """
+        try:
+            return await self.run(
+                goal=goal,
+                context=context,
+                event_bus=event_bus,
+                pause_events=pause_events,
+                cancel_event=cancel_event,
+            )
+        except asyncio.CancelledError:
+            if event_bus:
+                event_bus.emit(Event(
+                    type=EventType.ORCHESTRATION_CANCELLED,
+                    data={"goal": goal},
+                ))
+            raise
+        except Exception as e:
+            if event_bus:
+                event_bus.emit(Event(
+                    type=EventType.ORCHESTRATION_FAILED,
+                    data={"error": str(e)},
+                ))
+            raise
 
     async def _plan(
         self, goal: str, context: str = ""

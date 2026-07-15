@@ -19,10 +19,12 @@ import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from subagent_manager.events import Event, EventBus, EventType
 from subagent_manager.tools.base import BaseTool
 
 logger = logging.getLogger(__name__)
@@ -258,6 +260,11 @@ class LLMClient:
         max_iterations: int = 5,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        event_bus: EventBus | None = None,
+        subtask_id: int | None = None,
+        agent_name: str | None = None,
+        pause_event: asyncio.Event | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> ToolLoopResult:
         """
         Run LLM with iterative tool execution until a final answer.
@@ -279,17 +286,27 @@ class LLMClient:
             max_iterations: Hard cap on tool call rounds.
             temperature: Override default temperature.
             max_tokens: Override default max tokens.
+            event_bus: Optional event bus for GUI streaming.
+            subtask_id: Subtask ID for event tagging.
+            agent_name: Agent name for event tagging.
+            pause_event: If set, the loop will wait at each checkpoint
+                when this event is *cleared* (paused state = event not set).
+            cancel_event: If set, the loop will abort when this event is set.
 
         Returns:
             ToolLoopResult with the final answer and metadata.
         """
         if self._supports_native_tools:
             return await self._tool_loop_native(
-                messages, tools, max_iterations, temperature, max_tokens
+                messages, tools, max_iterations, temperature, max_tokens,
+                event_bus=event_bus, subtask_id=subtask_id, agent_name=agent_name,
+                pause_event=pause_event, cancel_event=cancel_event,
             )
         else:
             return await self._tool_loop_prompt_based(
-                messages, tools, max_iterations, temperature, max_tokens
+                messages, tools, max_iterations, temperature, max_tokens,
+                event_bus=event_bus, subtask_id=subtask_id, agent_name=agent_name,
+                pause_event=pause_event, cancel_event=cancel_event,
             )
 
     async def _tool_loop_native(
@@ -299,6 +316,11 @@ class LLMClient:
         max_iterations: int,
         temperature: float | None,
         max_tokens: int | None,
+        event_bus: EventBus | None = None,
+        subtask_id: int | None = None,
+        agent_name: str | None = None,
+        pause_event: asyncio.Event | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> ToolLoopResult:
         """Tool loop for providers with native function calling support."""
         tool_schemas = [t.to_openai_schema() for t in tools]
@@ -312,14 +334,51 @@ class LLMClient:
         for iteration in range(max_iterations):
             logger.debug(f"Native tool loop iteration {iteration + 1}/{max_iterations}")
 
+            # --- Checkpoint: pause/cancel between iterations ---
+            if cancel_event and cancel_event.is_set():
+                logger.info(f"Native tool loop cancelled at iteration {iteration + 1}")
+                raise asyncio.CancelledError("Agent cancelled by user")
+            if pause_event:
+                # pause_event is SET when running, CLEARED when paused
+                if not pause_event.is_set():
+                    if event_bus:
+                        event_bus.emit(Event(
+                            type=EventType.SUBTASK_PAUSED,
+                            subtask_id=subtask_id, agent_name=agent_name,
+                            data={"iteration": iteration},
+                        ))
+                    logger.info(f"Native tool loop paused at iteration {iteration + 1}")
+                    await pause_event.wait()  # blocks until user resumes
+                    if event_bus:
+                        event_bus.emit(Event(
+                            type=EventType.SUBTASK_RESUMED,
+                            subtask_id=subtask_id, agent_name=agent_name,
+                            data={"iteration": iteration},
+                        ))
+
+            t_start = time.monotonic()
             result = await self.complete(
                 messages=conversation,
                 tools=tool_schemas,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+            duration_ms = int((time.monotonic() - t_start) * 1000)
 
             total_tokens += result.usage.get("total_tokens", 0)
+
+            if event_bus:
+                event_bus.emit(Event(
+                    type=EventType.LLM_CALL_COMPLETED,
+                    subtask_id=subtask_id, agent_name=agent_name,
+                    data={
+                        "iteration": iteration,
+                        "tokens": result.usage.get("total_tokens", 0),
+                        "finish_reason": result.finish_reason,
+                        "duration_ms": duration_ms,
+                        "has_tool_calls": bool(result.tool_calls),
+                    },
+                ))
 
             # If no tool calls, we have a final answer
             if not result.tool_calls:
@@ -351,9 +410,29 @@ class LLMClient:
                 func_args_raw = tc["function"]["arguments"]
                 total_tool_calls += 1
 
+                if event_bus:
+                    event_bus.emit(Event(
+                        type=EventType.TOOL_CALL_STARTED,
+                        subtask_id=subtask_id, agent_name=agent_name,
+                        data={"tool_name": func_name, "arguments": func_args_raw},
+                    ))
+
+                t_tool_start = time.monotonic()
                 tool_result = await self._execute_tool(
                     func_name, func_args_raw, tool_map, sources
                 )
+                tool_duration_ms = int((time.monotonic() - t_tool_start) * 1000)
+
+                if event_bus:
+                    event_bus.emit(Event(
+                        type=EventType.TOOL_CALL_COMPLETED,
+                        subtask_id=subtask_id, agent_name=agent_name,
+                        data={
+                            "tool_name": func_name,
+                            "result": tool_result[:500] if len(tool_result) > 500 else tool_result,
+                            "duration_ms": tool_duration_ms,
+                        },
+                    ))
 
                 conversation.append({
                     "role": "tool",
@@ -392,6 +471,11 @@ class LLMClient:
         max_iterations: int,
         temperature: float | None,
         max_tokens: int | None,
+        event_bus: EventBus | None = None,
+        subtask_id: int | None = None,
+        agent_name: str | None = None,
+        pause_event: asyncio.Event | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> ToolLoopResult:
         """
         Tool loop for models without native function calling (e.g., Ollama).
@@ -455,13 +539,36 @@ class LLMClient:
                 f"Prompt-based tool loop iteration {iteration + 1}/{max_iterations}"
             )
 
+            # --- Checkpoint: pause/cancel between iterations ---
+            if cancel_event and cancel_event.is_set():
+                logger.info(f"Prompt-based tool loop cancelled at iteration {iteration + 1}")
+                raise asyncio.CancelledError("Agent cancelled by user")
+            if pause_event:
+                if not pause_event.is_set():
+                    if event_bus:
+                        event_bus.emit(Event(
+                            type=EventType.SUBTASK_PAUSED,
+                            subtask_id=subtask_id, agent_name=agent_name,
+                            data={"iteration": iteration},
+                        ))
+                    logger.info(f"Prompt-based tool loop paused at iteration {iteration + 1}")
+                    await pause_event.wait()
+                    if event_bus:
+                        event_bus.emit(Event(
+                            type=EventType.SUBTASK_RESUMED,
+                            subtask_id=subtask_id, agent_name=agent_name,
+                            data={"iteration": iteration},
+                        ))
+
             # No tools passed to LiteLLM — we handle it ourselves
+            t_start = time.monotonic()
             result = await self.complete(
                 messages=conversation,
                 tools=None,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+            duration_ms = int((time.monotonic() - t_start) * 1000)
 
             total_tokens += result.usage.get("total_tokens", 0)
             content = result.content.strip()
@@ -470,6 +577,18 @@ class LLMClient:
                 f"Prompt-based loop got content "
                 f"(len={len(content)}): {repr(content[:200])}"
             )
+
+            if event_bus:
+                event_bus.emit(Event(
+                    type=EventType.LLM_CALL_COMPLETED,
+                    subtask_id=subtask_id, agent_name=agent_name,
+                    data={
+                        "iteration": iteration,
+                        "tokens": result.usage.get("total_tokens", 0),
+                        "finish_reason": result.finish_reason,
+                        "duration_ms": duration_ms,
+                    },
+                ))
 
             # Try to parse a tool call from the response
             tool_schemas = [t.to_openai_schema() for t in tools]
@@ -502,9 +621,29 @@ class LLMClient:
                 func_args_raw = tc["function"]["arguments"]
                 total_tool_calls += 1
 
+                if event_bus:
+                    event_bus.emit(Event(
+                        type=EventType.TOOL_CALL_STARTED,
+                        subtask_id=subtask_id, agent_name=agent_name,
+                        data={"tool_name": func_name, "arguments": func_args_raw},
+                    ))
+
+                t_tool_start = time.monotonic()
                 tool_result = await self._execute_tool(
                     func_name, func_args_raw, tool_map, sources
                 )
+                tool_duration_ms = int((time.monotonic() - t_tool_start) * 1000)
+
+                if event_bus:
+                    event_bus.emit(Event(
+                        type=EventType.TOOL_CALL_COMPLETED,
+                        subtask_id=subtask_id, agent_name=agent_name,
+                        data={
+                            "tool_name": func_name,
+                            "result": tool_result[:500] if len(tool_result) > 500 else tool_result,
+                            "duration_ms": tool_duration_ms,
+                        },
+                    ))
 
                 tool_results_text.append(
                     f"[Tool: {func_name}] Result:\n{tool_result}"

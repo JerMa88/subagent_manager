@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from subagent_manager.events import EventBus
 from subagent_manager.strategies.base import BaseStrategy, ExecutionPlan
 from subagent_manager.subagent import SubAgent, SubAgentResult
 
@@ -34,6 +35,9 @@ class ParallelStrategy(BaseStrategy):
         plan: ExecutionPlan,
         agents: dict[str, SubAgent],
         completed_results: dict[int, SubAgentResult] | None = None,
+        event_bus: EventBus | None = None,
+        pause_events: dict[int, asyncio.Event] | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> list[SubAgentResult]:
         """Execute the plan in parallel waves."""
         results: dict[int, SubAgentResult] = dict(completed_results or {})
@@ -55,7 +59,12 @@ class ParallelStrategy(BaseStrategy):
                     )
                     # Force-execute remaining tasks without dependencies
                     for task in remaining:
-                        result = await self._execute_subtask(task, agents, results)
+                        result = await self._execute_subtask(
+                            task, agents, results,
+                            event_bus=event_bus,
+                            pause_events=pause_events,
+                            cancel_event=cancel_event,
+                        )
                         results[task.id] = result
                         completed_ids.add(task.id)
                         all_results.append(result)
@@ -67,7 +76,13 @@ class ParallelStrategy(BaseStrategy):
 
             # Execute all ready tasks in parallel
             coros = [
-                self._execute_subtask(subtask, agents, results) for subtask in ready
+                self._execute_subtask(
+                    subtask, agents, results,
+                    event_bus=event_bus,
+                    pause_events=pause_events,
+                    cancel_event=cancel_event,
+                )
+                for subtask in ready
             ]
             wave_results = await asyncio.gather(*coros, return_exceptions=True)
 

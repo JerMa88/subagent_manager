@@ -11,6 +11,7 @@ Usage:
     result = manager.run_sync("Research the latest advances in quantum computing")
 """
 
+from subagent_manager.events import Event, EventBus, EventType
 from subagent_manager.llm_client import LLMClient
 from subagent_manager.manager import ManagerResult, SubAgentManager
 from subagent_manager.subagent import SubAgent, SubAgentConfig, SubAgentResult
@@ -22,6 +23,9 @@ __all__ = [
     "SubAgentConfig",
     "SubAgentResult",
     "LLMClient",
+    "EventBus",
+    "EventType",
+    "Event",
 ]
 
 __version__ = "0.1.0"

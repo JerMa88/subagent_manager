@@ -23,7 +23,7 @@ def make_mock_agent(name: str) -> SubAgent:
     client = LLMClient(model="test-model")
     agent = SubAgent(config=config, llm_client=client)
 
-    async def mock_execute(task: str, context: str = "") -> SubAgentResult:
+    async def mock_execute(task: str, context: str = "", **kwargs) -> SubAgentResult:
         return SubAgentResult(
             agent_name=name,
             task=task,

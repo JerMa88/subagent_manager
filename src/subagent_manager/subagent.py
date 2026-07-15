@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from subagent_manager.events import Event, EventBus, EventType
 from subagent_manager.llm_client import LLMClient
 from subagent_manager.prompts.subagent import build_subagent_system_prompt
 from subagent_manager.tools.base import BaseTool
@@ -128,7 +129,15 @@ class SubAgent:
         else:
             self.llm_client = llm_client
 
-    async def execute(self, task: str, context: str = "") -> SubAgentResult:
+    async def execute(
+        self,
+        task: str,
+        context: str = "",
+        event_bus: EventBus | None = None,
+        subtask_id: int | None = None,
+        pause_event: Any | None = None,
+        cancel_event: Any | None = None,
+    ) -> SubAgentResult:
         """
         Execute a single task in a fresh, isolated context.
 
@@ -142,11 +151,28 @@ class SubAgent:
         Args:
             task: The specific task to accomplish.
             context: Optional minimal context (e.g., results from dependency tasks).
+            event_bus: Optional event bus for GUI streaming.
+            subtask_id: Subtask ID for event tagging.
+            pause_event: asyncio.Event — cleared=paused, set=running.
+            cancel_event: asyncio.Event — set=cancel requested.
 
         Returns:
             SubAgentResult with the concise answer and metadata.
         """
         logger.info(f"SubAgent '{self.config.name}' executing: {task[:100]}...")
+
+        # Emit subtask_started event
+        if event_bus:
+            event_bus.emit(Event(
+                type=EventType.SUBTASK_STARTED,
+                subtask_id=subtask_id,
+                agent_name=self.config.name,
+                data={
+                    "task": task,
+                    "context": context[:500] if context else "",
+                    "tools": [t.name for t in self.config.tools],
+                },
+            ))
 
         # Build system prompt
         system_prompt = self.config.system_prompt or build_subagent_system_prompt(
@@ -173,9 +199,14 @@ class SubAgent:
                     max_iterations=self.config.max_tool_iterations,
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_answer_tokens,
+                    event_bus=event_bus,
+                    subtask_id=subtask_id,
+                    agent_name=self.config.name,
+                    pause_event=pause_event,
+                    cancel_event=cancel_event,
                 )
 
-                return SubAgentResult(
+                sub_result = SubAgentResult(
                     agent_name=self.config.name,
                     task=task,
                     answer=result.final_answer,
@@ -195,7 +226,7 @@ class SubAgent:
                 # Try to extract sources from the text
                 sources = self._extract_sources(result.content)
 
-                return SubAgentResult(
+                sub_result = SubAgentResult(
                     agent_name=self.config.name,
                     task=task,
                     answer=result.content,
@@ -205,15 +236,39 @@ class SubAgent:
                     tokens_used=result.usage.get("total_tokens", 0),
                 )
 
+            # Emit subtask_completed event
+            if event_bus:
+                event_bus.emit(Event(
+                    type=EventType.SUBTASK_COMPLETED,
+                    subtask_id=subtask_id,
+                    agent_name=self.config.name,
+                    data={
+                        "answer": sub_result.answer[:500] if sub_result.answer else "",
+                        "sources": sub_result.sources,
+                        "tokens_used": sub_result.tokens_used,
+                        "tool_calls_made": sub_result.tool_calls_made,
+                    },
+                ))
+            return sub_result
+
         except Exception as e:
             logger.error(f"SubAgent '{self.config.name}' failed: {e}")
-            return SubAgentResult(
+            err_result = SubAgentResult(
                 agent_name=self.config.name,
                 task=task,
                 answer="",
                 success=False,
                 error=str(e),
             )
+            if event_bus:
+                event_bus.emit(Event(
+                    type=EventType.SUBTASK_FAILED,
+                    subtask_id=subtask_id,
+                    agent_name=self.config.name,
+                    data={"error": str(e)},
+                ))
+            return err_result
+
 
     @staticmethod
     def _extract_sources(text: str) -> list[str]:
