@@ -64,6 +64,39 @@ To enable real-time UI without breaking the core library's API, an isolated even
 - **Global Error Catching**: Added an error state for the orchestrator, preventing silent failures when API keys or local models are missing.
 - **Local Model Auto-Discovery**: The config panel now queries Ollama's local tags to populate a dropdown of all installed models.
 
+## Feature Walkthrough & Screenshots
+
+### 1. Initial State & Configuration
+![Initial Idle State](docs/assets/gui_initial_state_1784136699601.png)
+*The SubAgent Manager idle state with Run History sidebar and Status Bar.*
+
+![Configuration Panel](docs/assets/config_panel_1784137010252.png)
+*Slide-in configuration panel to edit model, strategy, API key, and other system defaults.*
+
+### 2. Goal Entry & Execution
+![Run Started DAG](docs/assets/run_started_dag_1784137203469.png)
+*Entering a goal with optional context and starting the run.*
+
+![Completed Run DAG](docs/assets/completed_dag_1784137265891.png)
+*The dynamic SVG DAG visualization showing the agent plan after execution.*
+
+### 3. Agent Inspection Panel
+![Node Details - Output](docs/assets/node_details_1784137299083.png)
+*Selecting a node opens the Agent Panel. The Output tab shows the final answer produced by the subagent.*
+
+![Node Details - Tool Calls](docs/assets/node_tools_1784137321253.png)
+*The Tools tab displays a collapsible log of every tool execution, arguments, and return values.*
+
+![Node Details - Context](docs/assets/node_context_1784137356000.png)
+*The Context tab provides the full prompt and history (system, user, assistant messages) given to the subagent.*
+
+### 4. Run History & Failure States
+![Failed Run Canvas](docs/assets/failed_run_canvas_1784137397957.png)
+*Run History sidebar allows loading previous runs (including failed ones). Failed nodes are styled with error accents.*
+
+![Successful Run Final State](docs/assets/successful_run_final_state_1784137422636.png)
+*The complete interface showing the final synthesized answer at the bottom after a successful run.*
+
 ## Files Created (45 total)
 
 ### Core Package (`src/subagent_manager/`)
