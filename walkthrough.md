@@ -37,7 +37,34 @@ User → SubAgentManager → Orchestrator LLM (plan only)
                        Final Answer + Sources
 ```
 
-## Files Created (30 total)
+## GUI Implementation
+
+The GUI was built in 4 phases to provide a real-time, visual command center over the orchestration process.
+
+### Phase 1: Core Event Bus (`856c75c`)
+To enable real-time UI without breaking the core library's API, an isolated event bus was added.
+- **`events.py`**: Added an `EventType` enum (18 types) and a thread-safe `EventBus`.
+- **Instrumentation**: `manager.py`, `llm_client.py`, and `subagent.py` were instrumented to emit granular lifecycle events (e.g., `SUBTASK_STARTED`, `TOOL_CALL_COMPLETED`, `LLM_CALL_COMPLETED`).
+- **Execution Control**: Checkpoints via `asyncio.Event` (`pause_event`, `cancel_event`) were embedded deep into the tool loops, allowing the UI to pause/resume or cancel subagents mid-generation without killing threads.
+
+### Phase 2: FastAPI & WebSocket Backend (`055cdac`)
+- **`server.py`**: A FastAPI application exposing REST endpoints (`/api/run`, `/api/config`, `/api/models`) and a WebSocket route (`/ws/{run_id}`) for streaming event broadcast.
+- **`db.py`**: Added `aiosqlite` persistence. All runs, plans, and real-time events are stored in `runs.db`, enabling the UI to reload past states accurately.
+- **`run_manager.py`**: Manages the active run's lifecycle in an asyncio background task, piping the `EventBus` into WebSocket clients and the SQLite event log.
+
+### Phase 3: React Command Center UI (`2363821`)
+- **Visual DAG**: Created a dynamic SVG Directed Acyclic Graph (`DagView`) to visualize the orchestration plan, highlighting active, paused, and completed subagents with animated bezier curves.
+- **Agent Inspector**: A slide-out `AgentPanel` for deep-diving into individual subagent states, showing their output, tool calls, and LLM context history in real-time.
+- **Zustand State Engine**: Built a reactive store in `useStore.js` that reduces the raw 18 `EventBus` event types into a coherent UI state.
+- **Live Controls**: Added buttons to pause, resume, or cancel specific subagents mid-generation, and a text area to inject mid-flight context instructions.
+
+### Phase 4: Error Handling & UX Polish (`60e7695`)
+- **Token Analytics**: Extracted `prompt_tokens` and `completion_tokens` from LiteLLM. The UI now splits token usage to show exactly how large the context window is compared to generation output (`e.g., 1,250 tok (1,000 ctx / 250 gen)`).
+- **Run History Replay**: `loadRun` was updated to synchronously replay historical events to perfectly reconstruct past UI states.
+- **Global Error Catching**: Added an error state for the orchestrator, preventing silent failures when API keys or local models are missing.
+- **Local Model Auto-Discovery**: The config panel now queries Ollama's local tags to populate a dropdown of all installed models.
+
+## Files Created (45 total)
 
 ### Core Package (`src/subagent_manager/`)
 | File | Purpose |
@@ -86,6 +113,21 @@ User → SubAgentManager → Orchestrator LLM (plan only)
 | [web_research.py](file:///Users/zma/Documents/programs/subagent_manager/examples/web_research.py) | Grounded web research |
 | [code_review.py](file:///Users/zma/Documents/programs/subagent_manager/examples/code_review.py) | Code analysis workflow |
 | [ollama_edge.py](file:///Users/zma/Documents/programs/subagent_manager/examples/ollama_edge.py) | Edge deployment with hybrid models |
+
+### GUI Backend (`gui/backend/`)
+| File | Purpose |
+|------|---------|
+| [server.py](file:///Users/zma/Documents/programs/subagent_manager/gui/backend/server.py) | FastAPI app, REST/WS routes |
+| [db.py](file:///Users/zma/Documents/programs/subagent_manager/gui/backend/db.py) | SQLite persistence layer |
+| [run_manager.py](file:///Users/zma/Documents/programs/subagent_manager/gui/backend/run_manager.py) | SubAgentManager background task orchestrator |
+
+### GUI Frontend (`gui/frontend/src/`)
+| File | Purpose |
+|------|---------|
+| [stores/useStore.js](file:///Users/zma/Documents/programs/subagent_manager/gui/frontend/src/stores/useStore.js) | Zustand state engine |
+| [hooks/useWebSocket.js](file:///Users/zma/Documents/programs/subagent_manager/gui/frontend/src/hooks/useWebSocket.js) | Real-time event listener |
+| [components/*.jsx](file:///Users/zma/Documents/programs/subagent_manager/gui/frontend/src/components) | 11 React components (DagView, AgentPanel, etc.) |
+| [index.css](file:///Users/zma/Documents/programs/subagent_manager/gui/frontend/src/index.css) | Custom glassmorphism design system |
 
 ### Config
 | File | Purpose |

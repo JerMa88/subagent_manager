@@ -78,6 +78,27 @@ Every major agentic system has independently converged on the same architectural
 5. **Tool loops are bounded** — `max_tool_iterations=5` prevents runaway chains
 6. **Synthesis is constrained** — the synthesizer combines results without adding new information
 
+## SubAgent Command Center (GUI)
+
+The framework includes a real-time, interactive React GUI for visualizing and controlling the orchestration process.
+
+```bash
+# Terminal 1: Start the FastAPI/WebSocket backend (SQLite persistent)
+cd gui/backend
+uvicorn server:app --port 8000
+
+# Terminal 2: Start the Vite + React frontend
+cd gui/frontend
+npm install
+npm run dev
+```
+
+**GUI Features:**
+- **Visual DAG**: Watch the orchestrator's plan unfold as an animated dependency graph.
+- **Agent Inspector**: Click any node to instantly view its live context window, thought iterations, tool calls, and exact token usage (context vs generation).
+- **Execution Control**: Pause, resume, or cancel specific subagents mid-generation, or inject new instructions into their isolated context dynamically.
+- **Run History**: Automatically persists all runs, plans, and streaming events to SQLite, allowing you to instantly replay and review any past orchestration task.
+
 ## Installation
 
 ```bash
