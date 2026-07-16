@@ -1,0 +1,5 @@
+# Cloned repositories (can be very large)
+bench/repos/
+
+# Run results and predictions (generated output)
+bench/results/

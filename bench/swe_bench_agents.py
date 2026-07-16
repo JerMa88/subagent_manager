@@ -35,7 +35,7 @@ def build_swe_bench_agents(repo_dir: str) -> list[SubAgentConfig]:
         List of SubAgentConfig instances for the SWE-bench pipeline.
     """
     # Shared tool instances scoped to the repo
-    file_reader = FileReaderTool(allowed_dirs=[repo_dir])
+    file_reader = FileReaderTool(allowed_dirs=[repo_dir], working_dir=repo_dir)
     shell_exec = ShellExecTool(working_dir=repo_dir)
     file_writer = FileWriterTool(working_dir=repo_dir)
     dir_list = DirectoryListTool(working_dir=repo_dir)
@@ -72,10 +72,13 @@ def build_swe_bench_agents(repo_dir: str) -> list[SubAgentConfig]:
         SubAgentConfig(
             name="patch_writer",
             description=(
-                "Generates a code fix for a diagnosed bug. Reads the relevant "
-                "source files, understands the root cause, and writes corrected "
-                "file contents. The fix should be minimal — change only what is "
-                "necessary to resolve the issue without altering unrelated code."
+                "Generates and APPLIES a code fix for a diagnosed bug. You MUST "
+                "use the read_file tool to read the current file content, then "
+                "use the write_file tool to write the corrected version. Simply "
+                "describing the fix in text is NOT sufficient — you must actually "
+                "call write_file with the complete corrected file content. The fix "
+                "should be minimal — change only what is necessary to resolve the "
+                "issue without altering unrelated code."
             ),
             tools=[file_reader, file_writer, grep, shell_exec],
             max_tool_iterations=10,

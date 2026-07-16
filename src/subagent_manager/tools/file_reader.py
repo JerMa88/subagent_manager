@@ -55,6 +55,7 @@ class FileReaderTool(BaseTool):
         self,
         max_content_length: int = 8000,
         allowed_dirs: list[str] | None = None,
+        working_dir: str | None = None,
     ) -> None:
         """
         Initialize the file reader.
@@ -63,9 +64,12 @@ class FileReaderTool(BaseTool):
             max_content_length: Maximum characters to return.
             allowed_dirs: If set, only files within these directories can be read.
                 Provides basic sandboxing for security.
+            working_dir: Base directory for resolving relative paths.
+                If None, relative paths resolve against os.getcwd().
         """
         self.max_content_length = max_content_length
         self.allowed_dirs = [Path(d).resolve() for d in (allowed_dirs or [])]
+        self.working_dir = Path(working_dir).resolve() if working_dir else None
 
     async def execute(self, **kwargs: Any) -> str:
         """Read a file and return its contents."""
@@ -74,7 +78,11 @@ class FileReaderTool(BaseTool):
         if not path_str:
             return "Error: No file path provided."
 
-        path = Path(path_str).resolve()
+        # Resolve relative paths against working_dir if set
+        path = Path(path_str)
+        if not path.is_absolute() and self.working_dir:
+            path = self.working_dir / path
+        path = path.resolve()
 
         # Security check
         if self.allowed_dirs:
