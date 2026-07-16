@@ -96,6 +96,9 @@ class BaseTool(ABC):
         """
         ...
 
+    # Maximum result length before truncation (override in subclasses if needed)
+    max_result_length: int = 4000
+
     async def safe_execute(self, **kwargs: Any) -> str:
         """
         Execute the tool with error handling.
@@ -106,7 +109,7 @@ class BaseTool(ABC):
         try:
             result = await self.execute(**kwargs)
             # Truncate very long results to prevent context explosion
-            max_len = 4000
+            max_len = self.max_result_length
             if len(result) > max_len:
                 logger.log(
                     VERBOSE1,

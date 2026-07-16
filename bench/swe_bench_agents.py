@@ -35,11 +35,47 @@ def build_swe_bench_agents(repo_dir: str) -> list[SubAgentConfig]:
         List of SubAgentConfig instances for the SWE-bench pipeline.
     """
     # Shared tool instances scoped to the repo
-    file_reader = FileReaderTool(allowed_dirs=[repo_dir], working_dir=repo_dir)
+    file_reader = FileReaderTool(
+        allowed_dirs=[repo_dir],
+        working_dir=repo_dir,
+        max_content_length=12000,
+    )
+    # Override truncation limits for SWE-bench (source files can be large)
+    file_reader.max_result_length = 12000
+
     shell_exec = ShellExecTool(working_dir=repo_dir)
+    shell_exec.max_result_length = 8000  # Test output can be verbose
+
     file_writer = FileWriterTool(working_dir=repo_dir)
     dir_list = DirectoryListTool(working_dir=repo_dir)
     grep = GrepTool(working_dir=repo_dir)
+
+    # Custom system prompt for the patch_writer — overrides the default
+    # "be concise" prompt which causes the model to describe fixes in text
+    # instead of actually applying them via write_file.
+    patch_writer_system_prompt = """You are **patch_writer**, a code patching agent.
+
+Your job is to FIX a software bug by modifying source code files.
+
+## CRITICAL WORKFLOW — YOU MUST FOLLOW THESE STEPS:
+
+1. **READ** the file that needs fixing using the `read_file` tool
+2. **UNDERSTAND** the bug based on the diagnosis from previous agents
+3. **WRITE** the corrected file using the `write_file` tool with the COMPLETE fixed file content
+
+## RULES
+
+- You MUST call `write_file` with the complete corrected file content. This is NOT optional.
+- Simply describing the fix in text is USELESS — you must actually write the file.
+- Make MINIMAL changes — only modify the lines necessary to fix the bug.
+- Keep all other code, comments, and formatting exactly as they are.
+- If you need to understand the code structure first, use `grep_search` or `shell_exec`.
+
+## RESPONSE FORMAT
+
+After writing the fix, respond with a brief summary of what you changed and why.
+Do NOT include the full file content in your text response — it's already written to disk.
+"""
 
     return [
         SubAgentConfig(
@@ -80,6 +116,7 @@ def build_swe_bench_agents(repo_dir: str) -> list[SubAgentConfig]:
                 "should be minimal — change only what is necessary to resolve the "
                 "issue without altering unrelated code."
             ),
+            system_prompt=patch_writer_system_prompt,
             tools=[file_reader, file_writer, grep, shell_exec],
             max_tool_iterations=10,
             max_answer_tokens=2048,

@@ -1,0 +1,13 @@
+[
+  {
+    "instance_id": "sympy__sympy-15345",
+    "success": true,
+    "patch_generated": false,
+    "error": "",
+    "elapsed_seconds": 216.55699150000146,
+    "total_tokens": 30460,
+    "total_tool_calls": 12,
+    "diagnosis": "## Analysis of the Mathematica Code Generation Bug\n\nBased on the investigation, here's what we know about the issue where `mathematica_code(Max(x,2))` returns `'Max(2, x)'` instead of the expected `'Max[x,2]'`:\n\n### Root Cause\n\nThe bug is in SymPy's `_print_Max` method. It has two problems:\n\n1. **Wrong delimiters**: Uses parentheses `()` instead of square brackets `[]`, which are required for Mathematica syntax\n2. **Argument ordering issue**: Arguments appear reordered from `(x, 2)` to `(2, x)` ",
+    "patch_length": 0
+  }
+]
