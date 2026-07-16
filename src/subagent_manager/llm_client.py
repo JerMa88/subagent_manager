@@ -736,8 +736,9 @@ class LLMClient:
                 "content": (
                     "Here are the tool results:\n\n"
                     + "\n\n".join(tool_results_text)
-                    + "\n\nNow provide your final answer based on these results. "
-                    "Respond with plain text (no JSON)."
+                    + "\n\nContinue with your task. You may call another tool "
+                    "if needed, or provide your final answer as plain text "
+                    "(no JSON) if you are done."
                 ),
             })
 
