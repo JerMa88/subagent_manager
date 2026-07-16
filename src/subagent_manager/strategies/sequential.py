@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from subagent_manager.events import EventBus
+from subagent_manager.logging_config import VERBOSE1
 from subagent_manager.strategies.base import BaseStrategy, ExecutionPlan
 from subagent_manager.subagent import SubAgent, SubAgentResult
 
@@ -43,11 +45,13 @@ class SequentialStrategy(BaseStrategy):
             if subtask.id in results:
                 continue  # Already completed
 
-            logger.info(
-                f"Sequential: executing subtask {subtask.id} "
-                f"({subtask.agent_name})"
+            logger.log(
+                VERBOSE1,
+                f"[STRATEGY] Sequential: executing subtask {subtask.id}/{len(plan.subtasks)} "
+                f"(agent={subtask.agent_name})",
             )
 
+            subtask_t0 = time.monotonic()
             result = await self._execute_subtask(
                 subtask, agents, results,
                 event_bus=event_bus,
@@ -56,10 +60,18 @@ class SequentialStrategy(BaseStrategy):
             )
             results[subtask.id] = result
             all_results.append(result)
+            subtask_duration = time.monotonic() - subtask_t0
+
+            logger.log(
+                VERBOSE1,
+                f"[STRATEGY] Sequential: subtask {subtask.id} "
+                f"{'completed' if result.success else 'FAILED'} "
+                f"in {subtask_duration:.1f}s",
+            )
 
             if not result.success:
                 logger.warning(
-                    f"Subtask {subtask.id} failed: {result.error}. "
+                    f"[STRATEGY] Subtask {subtask.id} failed: {result.error}. "
                     f"Continuing with remaining tasks."
                 )
 

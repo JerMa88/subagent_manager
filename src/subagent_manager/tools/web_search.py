@@ -12,6 +12,8 @@ from typing import Any
 
 from subagent_manager.tools.base import BaseTool, ToolParameter
 
+from subagent_manager.logging_config import VERBOSE1
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,7 +67,14 @@ class WebSearchTool(BaseTool):
                     results.append(r)
 
             if not results:
+                logger.log(VERBOSE1, f"[TOOL:web_search] No results for query: {query}")
                 return f"No results found for query: {query}"
+
+            logger.log(
+                VERBOSE1,
+                f"[TOOL:web_search] query='{query}', max_results={max_results}, "
+                f"got {len(results)} results",
+            )
 
             output_lines = [f"Search results for: {query}\n"]
             for i, r in enumerate(results, 1):
@@ -79,5 +88,5 @@ class WebSearchTool(BaseTool):
             return "\n".join(output_lines)
 
         except Exception as e:
-            logger.warning(f"Web search failed for query '{query}': {e}")
+            logger.warning(f"[TOOL:web_search] Search failed for query '{query}': {e}")
             return f"Web search failed: {str(e)}"

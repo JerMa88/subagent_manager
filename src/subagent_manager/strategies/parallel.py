@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from subagent_manager.events import EventBus
+from subagent_manager.logging_config import VERBOSE1
 from subagent_manager.strategies.base import BaseStrategy, ExecutionPlan
 from subagent_manager.subagent import SubAgent, SubAgentResult
 
@@ -54,8 +56,10 @@ class ParallelStrategy(BaseStrategy):
                 remaining = [s for s in plan.subtasks if s.id not in completed_ids]
                 if remaining:
                     logger.warning(
-                        f"No ready tasks but {len(remaining)} tasks remain. "
-                        f"Possible circular dependency."
+                        f"[STRATEGY] No ready tasks but {len(remaining)} tasks remain. "
+                        f"Possible circular dependency. Remaining IDs: "
+                        f"{[s.id for s in remaining]}, deps: "
+                        f"{[(s.id, s.depends_on) for s in remaining]}"
                     )
                     # Force-execute remaining tasks without dependencies
                     for task in remaining:
@@ -70,9 +74,12 @@ class ParallelStrategy(BaseStrategy):
                         all_results.append(result)
                 break
 
-            logger.info(
-                f"Wave {wave_num + 1}: executing {len(ready)} tasks in parallel"
+            logger.log(
+                VERBOSE1,
+                f"[STRATEGY] Wave {wave_num + 1}: executing {len(ready)} tasks in parallel "
+                f"(IDs: {[s.id for s in ready]}, agents: {[s.agent_name for s in ready]})",
             )
+            wave_t0 = time.monotonic()
 
             # Execute all ready tasks in parallel
             coros = [
@@ -85,10 +92,14 @@ class ParallelStrategy(BaseStrategy):
                 for subtask in ready
             ]
             wave_results = await asyncio.gather(*coros, return_exceptions=True)
+            wave_duration = time.monotonic() - wave_t0
 
             for subtask, result in zip(ready, wave_results):
                 if isinstance(result, Exception):
-                    logger.error(f"Subtask {subtask.id} raised exception: {result}")
+                    logger.error(
+                        f"[STRATEGY] Subtask {subtask.id} (agent={subtask.agent_name}) "
+                        f"raised exception: {result}"
+                    )
                     result = SubAgentResult(
                         agent_name=subtask.agent_name,
                         task=subtask.task,

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from subagent_manager.events import EventBus
+from subagent_manager.logging_config import VERBOSE1, VERBOSE2, truncate_for_log
 from subagent_manager.subagent import SubAgent, SubAgentResult
 
 logger = logging.getLogger(__name__)
@@ -122,12 +123,26 @@ class BaseStrategy(ABC):
         for dep_id in subtask.depends_on:
             dep_result = results.get(dep_id)
             if dep_result and dep_result.success:
+                dep_answer = dep_result.answer
                 parts.append(
                     f"[Result from previous subtask '{dep_result.agent_name}']: "
-                    f"{dep_result.answer}"
+                    f"{dep_answer}"
+                )
+                logger.log(
+                    VERBOSE1,
+                    f"[STRATEGY] Injecting dependency context from subtask {dep_id} "
+                    f"(agent={dep_result.agent_name}) into subtask {subtask.id} "
+                    f"({len(dep_answer)} chars)",
+                )
+            elif dep_result and not dep_result.success:
+                logger.warning(
+                    f"[STRATEGY] Dependency subtask {dep_id} failed — "
+                    f"no context injected for subtask {subtask.id}"
                 )
 
-        return "\n\n".join(parts)
+        combined = "\n\n".join(parts)
+        logger.log(VERBOSE2, f"[STRATEGY] Combined context for subtask {subtask.id}: {len(combined)} chars")
+        return combined
 
     async def _execute_subtask(
         self,
@@ -143,11 +158,17 @@ class BaseStrategy(ABC):
 
         if agent is None:
             # Fallback: use the first available agent
+            fallback_name = next(iter(agents.keys()))
             logger.warning(
-                f"Agent '{subtask.agent_name}' not found for subtask {subtask.id}. "
-                f"Using fallback agent."
+                f"[STRATEGY] Agent '{subtask.agent_name}' not found for subtask {subtask.id}. "
+                f"Falling back to '{fallback_name}'."
             )
-            agent = next(iter(agents.values()))
+            agent = agents[fallback_name]
+        else:
+            logger.log(
+                VERBOSE1,
+                f"[STRATEGY] Subtask {subtask.id} assigned to agent '{subtask.agent_name}'",
+            )
 
         context = self._build_dependency_context(subtask, results)
         pause_event = pause_events.get(subtask.id) if pause_events else None

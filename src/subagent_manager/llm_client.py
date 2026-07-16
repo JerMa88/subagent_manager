@@ -25,6 +25,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from subagent_manager.events import Event, EventBus, EventType
+from subagent_manager.logging_config import (
+    format_tokens,
+    truncate_for_log,
+    VERBOSE1,
+    VERBOSE2,
+)
 from subagent_manager.tools.base import BaseTool
 
 logger = logging.getLogger(__name__)
@@ -162,13 +168,24 @@ class LLMClient:
             kwargs["api_base"] = self.api_base
 
         # Only pass tools to LiteLLM for providers with working native support.
-        # For Ollama and others, LiteLLM injects broken JSON mode directives
-        # that corrupt the conversation. We handle those via prompt-based
-        # tool calling in complete_with_tool_loop() instead.
         use_native_tools = tools and self._supports_native_tools
         if use_native_tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+
+        total_msg_chars = sum(len(m.get("content", "") or "") for m in messages)
+        logger.log(
+            VERBOSE1,
+            f"[LLM] → Call: model={self.model}, msgs={len(messages)}, "
+            f"chars={total_msg_chars:,}, temp={kwargs['temperature']}, "
+            f"max_tokens={kwargs['max_tokens']}, "
+            f"native_tools={'yes' if use_native_tools else 'no'}"
+            f"{f' ({len(tools)} tool schemas)' if use_native_tools else ''}",
+        )
+        logger.log(VERBOSE2, f"[LLM] Messages payload:")
+        for i, msg in enumerate(messages):
+            content_preview = truncate_for_log(msg.get('content', '') or '', 300)
+            logger.log(VERBOSE2, f"[LLM]   [{i}] role={msg['role']}: {content_preview}")
 
         # Retry logic: thinking models (Gemma 4, etc.) can exhaust max_tokens
         # on internal <think> tokens, returning empty content. LiteLLM throws
@@ -176,6 +193,7 @@ class LLMClient:
         # larger token budget.
         max_attempts = 3
         response = None
+        call_t0 = time.monotonic()
         for attempt in range(max_attempts):
             try:
                 response = await litellm.acompletion(**kwargs)
@@ -189,14 +207,14 @@ class LLMClient:
                     old_max = kwargs["max_tokens"]
                     kwargs["max_tokens"] = old_max * 2
                     logger.warning(
-                        f"Empty model output (thinking model likely exhausted "
+                        f"[LLM] Empty model output (thinking model likely exhausted "
                         f"token budget). Retrying with max_tokens="
                         f"{kwargs['max_tokens']} (was {old_max}), "
                         f"attempt {attempt + 2}/{max_attempts}"
                     )
                     await asyncio.sleep(0.5)
                     continue
-                logger.error(f"LLM completion failed: {e}")
+                logger.error(f"[LLM] Completion failed: {e}")
                 raise
 
             content_text = response.choices[0].message.content or ""
@@ -213,12 +231,14 @@ class LLMClient:
                 old_max = kwargs["max_tokens"]
                 kwargs["max_tokens"] = old_max * 2
                 logger.warning(
-                    f"Empty response with "
+                    f"[LLM] Empty response with "
                     f"{response.usage.completion_tokens if response.usage else '?'} "
                     f"completion tokens. Retrying with max_tokens="
                     f"{kwargs['max_tokens']} (was {old_max})"
                 )
                 await asyncio.sleep(0.5)
+
+        call_duration = time.monotonic() - call_t0
 
         choice = response.choices[0]
         message = choice.message
@@ -246,12 +266,31 @@ class LLMClient:
                 "total_tokens": getattr(response.usage, "total_tokens", 0),
             }
 
-        return CompletionResult(
+        result = CompletionResult(
             content=content,
             tool_calls=tool_calls_data,
             finish_reason=choice.finish_reason or "stop",
             usage=usage,
         )
+
+        logger.log(
+            VERBOSE1,
+            f"[LLM] ← Response: {format_tokens(usage)}, "
+            f"finish={result.finish_reason}, "
+            f"content={len(content)} chars, "
+            f"tool_calls={len(tool_calls_data)}, "
+            f"latency={call_duration:.2f}s",
+        )
+        if tool_calls_data:
+            for tc in tool_calls_data:
+                logger.log(
+                    VERBOSE1,
+                    f"[LLM]   tool_call: {tc['function']['name']}"
+                    f"({truncate_for_log(tc['function']['arguments'], 200)})",
+                )
+        logger.log(VERBOSE2, f"[LLM] Response content: {truncate_for_log(content, 1000)}")
+
+        return result
 
     async def complete_with_tool_loop(
         self,
@@ -322,7 +361,10 @@ class LLMClient:
         pause_event: asyncio.Event | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> ToolLoopResult:
-        """Tool loop for providers with native function calling support."""
+        logger.log(
+            VERBOSE1,
+            f"[LLM] Native tool loop: {len(tools)} tools, max_iter={max_iterations}",
+        )
         tool_schemas = [t.to_openai_schema() for t in tools]
         tool_map = {t.name: t for t in tools}
 
@@ -332,7 +374,11 @@ class LLMClient:
         sources: list[str] = []
 
         for iteration in range(max_iterations):
-            logger.debug(f"Native tool loop iteration {iteration + 1}/{max_iterations}")
+            logger.log(
+                VERBOSE1,
+                f"[LLM] Native loop iter {iteration + 1}/{max_iterations} "
+                f"(cumulative: {total_tool_calls} tool calls, {total_tokens:,} tokens)",
+            )
 
             # --- Checkpoint: pause/cancel between iterations ---
             if cancel_event and cancel_event.is_set():
@@ -385,6 +431,11 @@ class LLMClient:
 
             # If no tool calls, we have a final answer
             if not result.tool_calls:
+                logger.log(
+                    VERBOSE1,
+                    f"[LLM] Native loop: final answer at iter {iteration + 1} "
+                    f"({len(result.content)} chars, {total_tokens:,} total tokens)",
+                )
                 return ToolLoopResult(
                     final_answer=result.content,
                     tool_calls_made=total_tool_calls,
@@ -444,6 +495,10 @@ class LLMClient:
                 })
 
         # Exhausted iterations — force a final answer
+        logger.warning(
+            f"[LLM] Native tool loop exhausted {max_iterations} iterations. "
+            f"Forcing final answer. ({total_tool_calls} tool calls, {total_tokens:,} tokens)"
+        )
         conversation.append({
             "role": "user",
             "content": (
@@ -487,6 +542,10 @@ class LLMClient:
         we embed tool descriptions in the system prompt and parse tool calls
         from the model's text output.
         """
+        logger.log(
+            VERBOSE1,
+            f"[LLM] Prompt-based tool loop: {len(tools)} tools, max_iter={max_iterations}",
+        )
         tool_map = {t.name: t for t in tools}
 
         # Build tool description block for the prompt
@@ -520,6 +579,8 @@ class LLMClient:
             + "\n".join(tool_desc_parts)
         )
 
+        logger.log(VERBOSE2, f"[LLM] Tool instruction block ({len(tool_instructions)} chars):\n{tool_instructions}")
+
         # Inject tool descriptions into the system prompt
         conversation = list(messages)
         if conversation and conversation[0]["role"] == "system":
@@ -538,8 +599,10 @@ class LLMClient:
         sources: list[str] = []
 
         for iteration in range(max_iterations):
-            logger.debug(
-                f"Prompt-based tool loop iteration {iteration + 1}/{max_iterations}"
+            logger.log(
+                VERBOSE1,
+                f"[LLM] Prompt-based loop iter {iteration + 1}/{max_iterations} "
+                f"(cumulative: {total_tool_calls} tool calls, {total_tokens:,} tokens)",
             )
 
             # --- Checkpoint: pause/cancel between iterations ---
@@ -576,9 +639,10 @@ class LLMClient:
             total_tokens += result.usage.get("total_tokens", 0)
             content = result.content.strip()
 
-            logger.debug(
-                f"Prompt-based loop got content "
-                f"(len={len(content)}): {repr(content[:200])}"
+            logger.log(
+                VERBOSE2,
+                f"[LLM] Prompt-based loop raw content "
+                f"(len={len(content)}): {truncate_for_log(content, 500)}",
             )
 
             if event_bus:
@@ -602,12 +666,18 @@ class LLMClient:
                 content, tool_schemas
             )
 
-            logger.debug(
-                f"Parsed {len(parsed_calls)} tool call(s) from content"
+            logger.log(
+                VERBOSE2,
+                f"[PARSE] Parsed {len(parsed_calls)} tool call(s) from model content",
             )
 
             if not parsed_calls:
                 # No tool call — this is the final answer
+                logger.log(
+                    VERBOSE1,
+                    f"[LLM] Prompt-based loop: final answer at iter {iteration + 1} "
+                    f"({len(content)} chars, {total_tokens:,} total tokens)",
+                )
                 return ToolLoopResult(
                     final_answer=content,
                     tool_calls_made=total_tool_calls,
@@ -616,9 +686,10 @@ class LLMClient:
                 )
 
             # Execute the tool call(s)
-            logger.info(
-                f"Parsed {len(parsed_calls)} tool call(s) from model output "
-                f"(prompt-based fallback)"
+            logger.log(
+                VERBOSE1,
+                f"[LLM] Parsed {len(parsed_calls)} tool call(s) from model output "
+                f"(prompt-based): {[tc['function']['name'] for tc in parsed_calls]}",
             )
 
             tool_results_text: list[str] = []
@@ -671,6 +742,10 @@ class LLMClient:
             })
 
         # Exhausted iterations — force a final answer
+        logger.warning(
+            f"[LLM] Prompt-based tool loop exhausted {max_iterations} iterations. "
+            f"Forcing final answer. ({total_tool_calls} tool calls, {total_tokens:,} tokens)"
+        )
         conversation.append({
             "role": "user",
             "content": (
@@ -704,11 +779,28 @@ class LLMClient:
         """Execute a single tool call and extract sources."""
         tool = tool_map.get(func_name)
         if tool is None:
+            logger.warning(f"[TOOL:{func_name}] Unknown tool requested")
             return f"Error: Unknown tool '{func_name}'"
 
         try:
             parsed_args = tool.parse_arguments(func_args_raw)
+            logger.log(
+                VERBOSE1,
+                f"[TOOL:{func_name}] Executing with args: {truncate_for_log(str(parsed_args), 300)}",
+            )
+            t0 = time.monotonic()
             tool_result = await tool.safe_execute(**parsed_args)
+            duration = time.monotonic() - t0
+
+            logger.log(
+                VERBOSE1,
+                f"[TOOL:{func_name}] Completed in {duration:.2f}s, "
+                f"result={len(tool_result)} chars",
+            )
+            logger.log(
+                VERBOSE2,
+                f"[TOOL:{func_name}] Result: {truncate_for_log(tool_result, 500)}",
+            )
 
             # Extract URLs from search results as sources
             if func_name == "web_search" and "URL:" in tool_result:
@@ -725,7 +817,7 @@ class LLMClient:
             return tool_result
 
         except Exception as e:
-            logger.warning(f"Tool execution error: {e}")
+            logger.warning(f"[TOOL:{func_name}] Execution error: {e}", exc_info=True)
             return f"Error executing {func_name}: {str(e)}"
 
     @staticmethod

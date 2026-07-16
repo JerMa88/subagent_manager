@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from typing import Any
 
 from pydantic import BaseModel
+
+from subagent_manager.logging_config import VERBOSE1, VERBOSE2
 
 logger = logging.getLogger(__name__)
 
@@ -105,10 +108,14 @@ class BaseTool(ABC):
             # Truncate very long results to prevent context explosion
             max_len = 4000
             if len(result) > max_len:
+                logger.log(
+                    VERBOSE1,
+                    f"[TOOL:{self.name}] Result truncated: {len(result)} → {max_len} chars",
+                )
                 result = result[:max_len] + "\n\n[... truncated — result too long]"
             return result
         except Exception as e:
-            logger.warning(f"Tool {self.name} failed: {e}")
+            logger.warning(f"[TOOL:{self.name}] safe_execute failed: {e}")
             return f"Error executing {self.name}: {str(e)}"
 
     def parse_arguments(self, arguments: str | dict[str, Any]) -> dict[str, Any]:

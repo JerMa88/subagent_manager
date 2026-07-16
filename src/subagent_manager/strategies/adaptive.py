@@ -14,6 +14,7 @@ import asyncio
 import logging
 
 from subagent_manager.events import EventBus
+from subagent_manager.logging_config import VERBOSE1
 from subagent_manager.strategies.base import BaseStrategy, ExecutionPlan
 from subagent_manager.strategies.parallel import ParallelStrategy
 from subagent_manager.strategies.sequential import SequentialStrategy
@@ -53,7 +54,7 @@ class AdaptiveStrategy(BaseStrategy):
 
         if len(plan.subtasks) == 1:
             # Single task — no strategy needed
-            logger.info("Adaptive: single task, executing directly")
+            logger.log(VERBOSE1, "[STRATEGY] Adaptive: single task, executing directly")
             return await self._sequential.execute(
                 plan, agents, completed_results,
                 event_bus=event_bus,
@@ -73,9 +74,11 @@ class AdaptiveStrategy(BaseStrategy):
 
         if not has_deps:
             # All independent — full parallel
-            logger.info(
-                f"Adaptive: all {total_count} tasks are independent, "
-                f"using parallel strategy"
+            logger.log(
+                VERBOSE1,
+                f"[STRATEGY] Adaptive analysis: has_deps={has_deps}, "
+                f"independent={independent_count}/{total_count}, "
+                f"is_pure_chain={is_pure_chain} → PARALLEL",
             )
             return await self._parallel.execute(
                 plan, agents, completed_results,
@@ -86,9 +89,11 @@ class AdaptiveStrategy(BaseStrategy):
 
         elif is_pure_chain:
             # Pure sequential chain
-            logger.info(
-                f"Adaptive: pure sequential chain of {total_count} tasks, "
-                f"using sequential strategy"
+            logger.log(
+                VERBOSE1,
+                f"[STRATEGY] Adaptive analysis: has_deps={has_deps}, "
+                f"independent={independent_count}/{total_count}, "
+                f"is_pure_chain={is_pure_chain} → SEQUENTIAL",
             )
             return await self._sequential.execute(
                 plan, agents, completed_results,
@@ -99,9 +104,11 @@ class AdaptiveStrategy(BaseStrategy):
 
         else:
             # Mixed dependencies — parallel with waves
-            logger.info(
-                f"Adaptive: mixed dependencies ({independent_count} independent "
-                f"of {total_count} total), using parallel wave strategy"
+            logger.log(
+                VERBOSE1,
+                f"[STRATEGY] Adaptive analysis: has_deps={has_deps}, "
+                f"independent={independent_count}/{total_count}, "
+                f"is_pure_chain={is_pure_chain} → PARALLEL (waves)",
             )
             return await self._parallel.execute(
                 plan, agents, completed_results,

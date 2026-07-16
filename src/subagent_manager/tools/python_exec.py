@@ -16,6 +16,8 @@ from typing import Any
 
 from subagent_manager.tools.base import BaseTool, ToolParameter
 
+from subagent_manager.logging_config import VERBOSE1, VERBOSE2, truncate_for_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,6 +62,9 @@ class PythonExecTool(BaseTool):
         if not code:
             return "Error: No code provided."
 
+        logger.log(VERBOSE1, f"[TOOL:python_exec] Executing code ({len(code)} chars, timeout={self.timeout}s)")
+        logger.log(VERBOSE2, f"[TOOL:python_exec] Code:\n{truncate_for_log(code, 1000)}")
+
         # Write code to a temp file
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -85,7 +90,17 @@ class PythonExecTool(BaseTool):
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.wait()
+                logger.warning(f"[TOOL:python_exec] Timed out after {self.timeout}s")
                 return f"Error: Code execution timed out after {self.timeout} seconds."
+
+            exit_code = proc.returncode
+            stdout_size = len(stdout) if stdout else 0
+            stderr_size = len(stderr) if stderr else 0
+            logger.log(
+                VERBOSE1,
+                f"[TOOL:python_exec] Completed: exit_code={exit_code}, "
+                f"stdout={stdout_size} bytes, stderr={stderr_size} bytes",
+            )
 
             output_parts = []
             if stdout:

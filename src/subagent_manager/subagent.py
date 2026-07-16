@@ -18,6 +18,12 @@ from typing import Any
 
 from subagent_manager.events import Event, EventBus, EventType
 from subagent_manager.llm_client import LLMClient
+from subagent_manager.logging_config import (
+    format_tokens,
+    truncate_for_log,
+    VERBOSE1,
+    VERBOSE2,
+)
 from subagent_manager.prompts.subagent import build_subagent_system_prompt
 from subagent_manager.tools.base import BaseTool
 
@@ -159,7 +165,13 @@ class SubAgent:
         Returns:
             SubAgentResult with the concise answer and metadata.
         """
-        logger.info(f"SubAgent '{self.config.name}' executing: {task[:100]}...")
+        logger.log(
+            VERBOSE1,
+            f"[AGENT:{self.config.name}] Executing task: {truncate_for_log(task, 200)}",
+        )
+        if context:
+            logger.log(VERBOSE1, f"[AGENT:{self.config.name}] Context provided ({len(context)} chars)")
+            logger.log(VERBOSE2, f"[AGENT:{self.config.name}] Context: {truncate_for_log(context, 500)}")
 
         # Emit subtask_started event
         if event_bus:
@@ -190,9 +202,17 @@ class SubAgent:
             {"role": "user", "content": user_content},
         ]
 
+        logger.log(VERBOSE2, f"[AGENT:{self.config.name}] System prompt ({len(system_prompt)} chars):\n{system_prompt}")
+        logger.log(VERBOSE2, f"[AGENT:{self.config.name}] User message ({len(user_content)} chars):\n{user_content}")
+
         try:
             if self.config.tools:
                 # Run with tool loop
+                logger.log(
+                    VERBOSE1,
+                    f"[AGENT:{self.config.name}] Using tool loop "
+                    f"({len(self.config.tools)} tools, max_iter={self.config.max_tool_iterations})",
+                )
                 result = await self.llm_client.complete_with_tool_loop(
                     messages=messages,
                     tools=self.config.tools,
@@ -217,6 +237,10 @@ class SubAgent:
                 )
             else:
                 # No tools — direct completion
+                logger.log(
+                    VERBOSE1,
+                    f"[AGENT:{self.config.name}] Direct completion (no tools)",
+                )
                 result = await self.llm_client.complete(
                     messages=messages,
                     temperature=self.config.temperature,
@@ -236,6 +260,21 @@ class SubAgent:
                     tokens_used=result.usage.get("total_tokens", 0),
                 )
 
+            # Log result summary
+            logger.log(
+                VERBOSE1,
+                f"[AGENT:{self.config.name}] Completed: "
+                f"success={sub_result.success}, "
+                f"tokens={sub_result.tokens_used:,}, "
+                f"tool_calls={sub_result.tool_calls_made}, "
+                f"answer={len(sub_result.answer)} chars, "
+                f"sources={len(sub_result.sources)}",
+            )
+            logger.log(
+                VERBOSE2,
+                f"[AGENT:{self.config.name}] Answer:\n{truncate_for_log(sub_result.answer, 1000)}",
+            )
+
             # Emit subtask_completed event
             if event_bus:
                 event_bus.emit(Event(
@@ -252,7 +291,10 @@ class SubAgent:
             return sub_result
 
         except Exception as e:
-            logger.error(f"SubAgent '{self.config.name}' failed: {e}")
+            logger.error(
+                f"[AGENT:{self.config.name}] Failed: {e}",
+                exc_info=True,
+            )
             err_result = SubAgentResult(
                 agent_name=self.config.name,
                 task=task,

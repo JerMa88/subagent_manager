@@ -19,8 +19,18 @@ import asyncio
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
+
+from subagent_manager.logging_config import (
+    configure_logging,
+    format_tokens,
+    log_phase,
+    truncate_for_log,
+    VERBOSE1,
+    VERBOSE2,
+)
 
 from subagent_manager.events import Event, EventBus, EventType
 from subagent_manager.llm_client import LLMClient
@@ -146,9 +156,10 @@ class SubAgentManager:
                 smarter/larger than subagent models).
             verbose: Enable debug logging.
         """
-        if verbose:
-            logging.basicConfig(level=logging.DEBUG)
-            logger.setLevel(logging.DEBUG)
+        # Configure graduated verbose logging
+        self._verbosity = verbose if isinstance(verbose, int) else (1 if verbose else 0)
+        if self._verbosity > 0:
+            configure_logging(verbosity=self._verbosity)
 
         self.model = model
         self.max_subtasks = max_subtasks
@@ -176,6 +187,23 @@ class SubAgentManager:
 
         # Execution strategy
         self.strategy = self._get_strategy(strategy)
+
+        # Log full configuration at init
+        logger.log(VERBOSE1, "[ORCHESTRATOR] SubAgentManager initialized:")
+        logger.log(VERBOSE1, f"[ORCHESTRATOR]   model={self.model}")
+        if orchestrator_model:
+            logger.log(VERBOSE1, f"[ORCHESTRATOR]   orchestrator_model={orchestrator_model}")
+        logger.log(VERBOSE1, f"[ORCHESTRATOR]   strategy={type(self.strategy).__name__}")
+        logger.log(VERBOSE1, f"[ORCHESTRATOR]   max_subtasks={self.max_subtasks}")
+        logger.log(VERBOSE1, f"[ORCHESTRATOR]   verbosity={self._verbosity}")
+        for cfg in self.agent_configs:
+            tool_names = [t.name for t in cfg.tools]
+            logger.log(
+                VERBOSE1,
+                f"[ORCHESTRATOR]   agent '{cfg.name}': "
+                f"tools={tool_names}, max_tool_iter={cfg.max_tool_iterations}, "
+                f"max_answer_tokens={cfg.max_answer_tokens}, temp={cfg.temperature}",
+            )
 
     def _get_strategy(self, name: str) -> BaseStrategy:
         """Get the execution strategy by name."""
@@ -216,7 +244,13 @@ class SubAgentManager:
         Returns:
             ManagerResult with the final answer and full metadata.
         """
-        logger.info(f"Starting orchestration for goal: {goal[:100]}...")
+        logger.log(VERBOSE1, f"[ORCHESTRATOR] ═══ Starting orchestration ═══")
+        logger.log(VERBOSE1, f"[ORCHESTRATOR] Goal: {goal}")
+        if context:
+            logger.log(VERBOSE1, f"[ORCHESTRATOR] Context provided ({len(context)} chars)")
+            logger.log(VERBOSE2, f"[ORCHESTRATOR] Context: {context}")
+
+        orchestration_t0 = time.monotonic()
 
         if event_bus:
             event_bus.emit(Event(
@@ -225,17 +259,26 @@ class SubAgentManager:
             ))
 
         # Step 1: Plan — decompose into subtasks
-        plan, raw_plan = await self._plan(goal, context)
+        with log_phase(logger, "Planning phase", "[PLAN]") as plan_meta:
+            plan, raw_plan = await self._plan(goal, context)
+            plan_meta["subtasks"] = len(plan.subtasks)
 
         if not plan.subtasks:
             # Fallback: if planning fails, use a single researcher
-            logger.warning("Planning produced no subtasks. Using fallback.")
+            logger.warning("[PLAN] Planning produced no subtasks. Using single-researcher fallback.")
             plan = ExecutionPlan(subtasks=[
                 SubtaskDef(id=1, task=goal, agent_name="researcher"),
             ])
             raw_plan = [{"id": 1, "task": goal, "agent": "researcher"}]
 
-        logger.info(f"Plan created with {len(plan.subtasks)} subtasks")
+        logger.log(VERBOSE1, f"[PLAN] Created {len(plan.subtasks)} subtasks:")
+        for st in plan.subtasks:
+            deps_str = f" depends_on={st.depends_on}" if st.depends_on else " (independent)"
+            logger.log(
+                VERBOSE1,
+                f"[PLAN]   #{st.id} → agent='{st.agent_name}'{deps_str}: "
+                f"{truncate_for_log(st.task, 120)}",
+            )
 
         if event_bus:
             event_bus.emit(Event(
@@ -244,12 +287,16 @@ class SubAgentManager:
             ))
 
         # Step 2: Execute — run subtasks via strategy
-        subtask_results = await self.strategy.execute(
-            plan, self.agents,
-            event_bus=event_bus,
-            pause_events=pause_events,
-            cancel_event=cancel_event,
-        )
+        with log_phase(logger, "Execution phase", "[STRATEGY]") as exec_meta:
+            subtask_results = await self.strategy.execute(
+                plan, self.agents,
+                event_bus=event_bus,
+                pause_events=pause_events,
+                cancel_event=cancel_event,
+            )
+            exec_meta["completed"] = len(subtask_results)
+            exec_meta["succeeded"] = sum(1 for r in subtask_results if r.success)
+            exec_meta["failed"] = sum(1 for r in subtask_results if not r.success)
 
         # Step 3: Synthesize — combine results into final answer
         if event_bus:
@@ -258,7 +305,9 @@ class SubAgentManager:
                 data={"subtask_count": len(subtask_results)},
             ))
 
-        final_answer = await self._synthesize(goal, subtask_results)
+        with log_phase(logger, "Synthesis phase", "[SYNTHESIS]") as synth_meta:
+            final_answer = await self._synthesize(goal, subtask_results)
+            synth_meta["answer_length"] = len(final_answer)
 
         if event_bus:
             event_bus.emit(Event(
@@ -295,6 +344,14 @@ class SubAgentManager:
                     "sources_count": len(all_sources),
                 },
             ))
+
+        total_elapsed = time.monotonic() - orchestration_t0
+        logger.log(
+            VERBOSE1,
+            f"[ORCHESTRATOR] ═══ Orchestration complete ═══  "
+            f"wall={total_elapsed:.1f}s  tokens={total_tokens:,}  "
+            f"tool_calls={total_tool_calls}  sources={len(all_sources)}",
+        )
 
         return result
 
@@ -402,10 +459,20 @@ class SubAgentManager:
             {"role": "user", "content": user_content},
         ]
 
+        logger.log(VERBOSE2, f"[PLAN] Orchestrator system prompt ({len(system_prompt)} chars):\n{system_prompt}")
+        logger.log(VERBOSE2, f"[PLAN] User content ({len(user_content)} chars):\n{user_content}")
+
         result = await self.orchestrator_client.complete(
             messages=messages,
             max_tokens=2048,
         )
+
+        logger.log(
+            VERBOSE1,
+            f"[PLAN] Orchestrator LLM response: {len(result.content)} chars, "
+            f"{format_tokens(result.usage)}",
+        )
+        logger.log(VERBOSE2, f"[PLAN] Raw orchestrator response:\n{result.content}")
 
         # Parse the JSON plan
         plan_data = self._parse_plan_json(result.content)
@@ -435,38 +502,47 @@ class SubAgentManager:
         try:
             data = json.loads(text)
             if isinstance(data, dict) and "plan" in data:
+                logger.log(VERBOSE1, "[PARSE] Plan JSON parsed via: direct JSON (dict with 'plan' key)")
                 return data["plan"]
             if isinstance(data, list):
+                logger.log(VERBOSE1, "[PARSE] Plan JSON parsed via: direct JSON (array)")
                 return data
         except json.JSONDecodeError:
-            pass
+            logger.log(VERBOSE2, "[PARSE] Direct JSON parse failed, trying code blocks...")
 
         # Try extracting JSON from code blocks
         json_blocks = re.findall(r"```(?:json)?\s*\n([\s\S]*?)\n```", text)
-        for block in json_blocks:
+        logger.log(VERBOSE2, f"[PARSE] Found {len(json_blocks)} code block(s) in response")
+        for i, block in enumerate(json_blocks):
             try:
                 data = json.loads(block)
                 if isinstance(data, dict) and "plan" in data:
+                    logger.log(VERBOSE1, f"[PARSE] Plan JSON parsed via: code block #{i+1} (dict with 'plan' key)")
                     return data["plan"]
                 if isinstance(data, list):
+                    logger.log(VERBOSE1, f"[PARSE] Plan JSON parsed via: code block #{i+1} (array)")
                     return data
             except json.JSONDecodeError:
+                logger.log(VERBOSE2, f"[PARSE] Code block #{i+1} is not valid JSON")
                 continue
 
         # Try finding JSON object/array in text
+        logger.log(VERBOSE2, "[PARSE] Trying embedded JSON extraction...")
         for pattern in [r"\{[\s\S]*\}", r"\[[\s\S]*\]"]:
             matches = re.findall(pattern, text)
             for match in matches:
                 try:
                     data = json.loads(match)
                     if isinstance(data, dict) and "plan" in data:
+                        logger.log(VERBOSE1, "[PARSE] Plan JSON parsed via: embedded JSON object")
                         return data["plan"]
                     if isinstance(data, list):
+                        logger.log(VERBOSE1, "[PARSE] Plan JSON parsed via: embedded JSON array")
                         return data
                 except json.JSONDecodeError:
                     continue
 
-        logger.warning(f"Could not parse plan JSON from: {text[:200]}...")
+        logger.warning(f"[PARSE] Could not parse plan JSON from response ({len(text)} chars): {text[:300]}...")
         return []
 
     async def _synthesize(
@@ -489,10 +565,19 @@ class SubAgentManager:
             for r in results
         ]
 
+        logger.log(
+            VERBOSE1,
+            f"[SYNTHESIS] Synthesizing {len(results)} subtask results "
+            f"({sum(1 for r in results if r.success)} succeeded, "
+            f"{sum(1 for r in results if not r.success)} failed)",
+        )
+
         synthesis_prompt = build_synthesis_prompt(
             original_goal=goal,
             subtask_results=result_dicts,
         )
+
+        logger.log(VERBOSE2, f"[SYNTHESIS] Synthesis prompt ({len(synthesis_prompt)} chars):\n{synthesis_prompt}")
 
         messages = [
             {"role": "system", "content": synthesis_prompt},
@@ -506,5 +591,12 @@ class SubAgentManager:
             messages=messages,
             max_tokens=2048,
         )
+
+        logger.log(
+            VERBOSE1,
+            f"[SYNTHESIS] Synthesis LLM response: {len(result.content)} chars, "
+            f"{format_tokens(result.usage)}",
+        )
+        logger.log(VERBOSE2, f"[SYNTHESIS] Raw synthesis response:\n{result.content}")
 
         return result.content

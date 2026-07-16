@@ -13,6 +13,7 @@ Usage:
 
 from subagent_manager.events import Event, EventBus, EventType
 from subagent_manager.llm_client import LLMClient
+from subagent_manager.logging_config import configure_logging
 from subagent_manager.manager import ManagerResult, SubAgentManager
 from subagent_manager.subagent import SubAgent, SubAgentConfig, SubAgentResult
 
@@ -26,6 +27,7 @@ __all__ = [
     "EventBus",
     "EventType",
     "Event",
+    "configure_logging",
 ]
 
 __version__ = "0.1.0"

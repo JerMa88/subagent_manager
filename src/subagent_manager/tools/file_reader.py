@@ -13,6 +13,8 @@ from typing import Any
 
 from subagent_manager.tools.base import BaseTool, ToolParameter
 
+from subagent_manager.logging_config import VERBOSE1
+
 logger = logging.getLogger(__name__)
 
 
@@ -77,11 +79,13 @@ class FileReaderTool(BaseTool):
         # Security check
         if self.allowed_dirs:
             if not any(self._is_subpath(path, d) for d in self.allowed_dirs):
+                logger.log(VERBOSE1, f"[TOOL:read_file] Access denied: {path} outside allowed dirs")
                 return (
                     f"Error: Access denied. File {path} is outside allowed directories."
                 )
 
         if not path.exists():
+            logger.log(VERBOSE1, f"[TOOL:read_file] File not found: {path}")
             return f"Error: File not found: {path}"
 
         if not path.is_file():
@@ -112,7 +116,17 @@ class FileReaderTool(BaseTool):
 
         # Truncate if needed
         if len(content) > self.max_content_length:
+            logger.log(
+                VERBOSE1,
+                f"[TOOL:read_file] Content truncated: {len(content)} → {self.max_content_length} chars",
+            )
             content = content[: self.max_content_length] + "\n\n[... content truncated]"
+
+        logger.log(
+            VERBOSE1,
+            f"[TOOL:read_file] Read {path}: {len(content)} chars"
+            f"{f', lines {start_line or 1}-{end_line}' if start_line or end_line else ''}",
+        )
 
         return header + content
 
