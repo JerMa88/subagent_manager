@@ -189,6 +189,120 @@ def extract_patch(repo_dir: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Fallback code extraction
+# ---------------------------------------------------------------------------
+
+import re
+
+
+def _try_extract_and_write_code(
+    result: Any,
+    repo_dir: str,
+) -> bool:
+    """
+    Fallback: extract code blocks from agent text answers and write them.
+
+    When the model describes the fix as inline code instead of calling
+    write_file (common with smaller models), this function parses the
+    agent's text answer to find code blocks and writes them to the
+    appropriate files.
+
+    Returns True if any files were written.
+    """
+    # Find the patch_writer's result
+    patch_writer_answer = ""
+    for sr in result.subtask_results:
+        if sr.agent_name == "patch_writer" and sr.success:
+            patch_writer_answer = sr.answer or ""
+            break
+
+    if not patch_writer_answer:
+        logger.log(VERBOSE1, "[HARNESS] No patch_writer answer to extract from")
+        return False
+
+    logger.log(
+        VERBOSE1,
+        f"[HARNESS] Attempting code extraction from {len(patch_writer_answer)}-char answer",
+    )
+
+    # Extract code blocks with optional language specifier
+    code_blocks = re.findall(
+        r'```(?:python)?\s*\n(.*?)```',
+        patch_writer_answer,
+        re.DOTALL,
+    )
+
+    if not code_blocks:
+        logger.log(VERBOSE1, "[HARNESS] No code blocks found in patch_writer answer")
+        return False
+
+    logger.log(
+        VERBOSE1,
+        f"[HARNESS] Found {len(code_blocks)} code block(s)",
+    )
+
+    # Try to identify the target file path from the text
+    # Look for patterns like "in mathematica.py", "file: path/to/file.py",
+    # or "sympy/printing/mathematica.py"
+    file_patterns = re.findall(
+        r'(?:(?:in|file|modify|fix|update|change)\s*[:=]?\s*)?'
+        r'[`\'"]*([a-zA-Z_][\w/]*\.py)[`\'"]*',
+        patch_writer_answer,
+    )
+
+    # Also search the broader result context
+    if not file_patterns:
+        full_text = result.answer or ""
+        for sr in result.subtask_results:
+            full_text += " " + (sr.answer or "")
+        file_patterns = re.findall(
+            r'([a-zA-Z_][\w/]*\.py)',
+            full_text,
+        )
+
+    # Use the largest code block (most likely the full file)
+    largest_block = max(code_blocks, key=len)
+
+    if not file_patterns:
+        logger.warning(
+            "[HARNESS] Code block found but no target file path identified"
+        )
+        return False
+
+    # Filter to the most likely target file
+    # Prefer paths that match common patterns in the code blocks
+    target_path = None
+    for fp in file_patterns:
+        full_path = os.path.join(repo_dir, fp)
+        if os.path.exists(full_path):
+            target_path = full_path
+            break
+
+    if not target_path:
+        # Try the first pattern anyway
+        target_path = os.path.join(repo_dir, file_patterns[0])
+
+    if not os.path.exists(target_path):
+        logger.warning(
+            f"[HARNESS] Target file does not exist: {target_path}"
+        )
+        return False
+
+    # Write the code
+    logger.log(
+        VERBOSE1,
+        f"[HARNESS] FALLBACK: Writing {len(largest_block)} chars to {target_path}",
+    )
+    try:
+        Path(target_path).write_text(largest_block, encoding="utf-8")
+        logger.log(VERBOSE1, f"[HARNESS] Fallback write successful: {target_path}")
+        return True
+    except Exception as e:
+        logger.error(f"[HARNESS] Fallback write failed: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Core pipeline runner
 # ---------------------------------------------------------------------------
 
@@ -330,8 +444,18 @@ async def run_instance(
             elapsed_seconds=time.monotonic() - t0,
         )
 
-    # Step 5: Extract the generated patch
+    # Step 5: Fallback code extraction
+    # If the patch_writer described the fix in text (with code blocks)
+    # instead of calling write_file, extract and apply the code.
     patch = extract_patch(repo_dir)
+    if not patch:
+        logger.log(
+            VERBOSE1,
+            "[HARNESS] No git diff detected — attempting fallback code extraction "
+            "from patch_writer text answer",
+        )
+        _try_extract_and_write_code(result, repo_dir)
+        patch = extract_patch(repo_dir)
 
     elapsed = time.monotonic() - t0
 
