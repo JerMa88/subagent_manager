@@ -1,0 +1,13 @@
+[
+  {
+    "instance_id": "sympy__sympy-15345",
+    "success": true,
+    "patch_generated": true,
+    "error": "",
+    "elapsed_seconds": 374.7654176249998,
+    "total_tokens": 33743,
+    "total_tool_calls": 12,
+    "diagnosis": "## Synthesis: Mathematica Code Generation Bug for `Max` in SymPy\n\n### Problem Summary\n\nWhen running:\n```python\nx = symbols('x')\nmathematica_code(Max(x, 2))\n```\n\nThe expected output is `'Max[x, 2]'`, but the actual output is `'Max(2, x)'`. Two issues occur simultaneously:\n\n1. **Wrong brackets**: Parentheses `()` are used instead of square brackets `[]` (invalid Mathematica syntax)\n2. **Argument reordering**: Arguments `(x, 2)` become `(2, x)` \u2014 the order is reversed\n\n### Root Cause Analysis\n\nThe ",
+    "patch_length": 27391
+  }
+]
