@@ -1,0 +1,13 @@
+[
+  {
+    "instance_id": "sympy__sympy-15345",
+    "success": true,
+    "patch_generated": false,
+    "error": "",
+    "elapsed_seconds": 331.29608033399563,
+    "total_tokens": 33373,
+    "total_tool_calls": 11,
+    "diagnosis": "# Mathematica Code Bug: `Max(x, 2)` Returns `'Max(2, x)'` Instead of `'Max[x, 2]'`\n\n## Root Cause\n\nThe bug is in **`sympy/printing/mathematica.py`**. Two problems combine to produce the wrong output:\n\n1. **Argument reordering**: The output shows `Max(2, x)` instead of `Max(x, 2)`, meaning arguments are being swapped somewhere before printing.\n2. **Parentheses vs brackets**: The output uses parentheses `( )` instead of Mathematica's square brackets `[ ]`.\n\n## How It Happens (from code_explorer fi",
+    "patch_length": 0
+  }
+]

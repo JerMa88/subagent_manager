@@ -202,9 +202,10 @@ Repository: `{prompt_repo_dir}`
             ),
             system_prompt=reproducer_system_prompt,
             tools=[file_writer, shell_exec, view_file, grep],
-            max_tool_iterations=4,  # write_file + shell_exec + at most 2 debug steps
+            max_tool_iterations=5,  # write_file + shell_exec + up to 3 re-prompts
             max_answer_tokens=2048,
-            temperature=0.1,  # Low temp: follow the script template exactly
+            mandatory_tool_call=True,  # MUST call write_file, not describe it
+            temperature=0.1,
         ),
         SubAgentConfig(
             name="code_explorer",
@@ -235,6 +236,7 @@ Repository: `{prompt_repo_dir}`
             max_tool_iterations=6,
             max_answer_tokens=2048,
             max_history_chars=25_000,  # Large window to retain pre-loaded file content
+            mandatory_tool_call=True,  # MUST call str_replace, not describe it
             temperature=0.1,  # Low temp: follow str_replace instructions exactly
         ),
         SubAgentConfig(

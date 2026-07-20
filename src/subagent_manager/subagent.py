@@ -70,6 +70,12 @@ class SubAgentConfig:
     Set higher for agents that need to retain large file contents (e.g., patch_writer).
     """
 
+    mandatory_tool_call: bool = False
+    """If True, the agent MUST call a tool on each iteration until budget is exhausted.
+    Removes the 'respond directly if no tool needed' escape hatch from tool instructions.
+    Use for agents like patch_writer (must call str_replace) and reproducer (must call write_file).
+    """
+
 
 @dataclass
 class SubAgentResult:
@@ -226,6 +232,7 @@ class SubAgent:
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_answer_tokens,
                     max_history_chars=self.config.max_history_chars,
+                    mandatory_tool_call=self.config.mandatory_tool_call,
                     event_bus=event_bus,
                     subtask_id=subtask_id,
                     agent_name=self.config.name,

@@ -305,6 +305,7 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         max_history_chars: int | None = None,
+        mandatory_tool_call: bool = False,
         event_bus: EventBus | None = None,
         subtask_id: int | None = None,
         agent_name: str | None = None,
@@ -334,6 +335,9 @@ class LLMClient:
             max_history_chars: Per-call override for sliding-window pruning threshold.
                 If None, uses the class-level MAX_HISTORY_CHARS (default 10,000).
                 Set higher for agents that hold large file contents in context.
+            mandatory_tool_call: If True, the agent MUST call a tool on each iteration
+                until it has exhausted its budget. Removes the 'respond directly' escape
+                hatch from the tool instructions. Use for patch_writer / reproducer.
             event_bus: Optional event bus for GUI streaming.
             subtask_id: Subtask ID for event tagging.
             agent_name: Agent name for event tagging.
@@ -354,6 +358,7 @@ class LLMClient:
             return await self._tool_loop_prompt_based(
                 messages, tools, max_iterations, temperature, max_tokens,
                 max_history_chars=max_history_chars,
+                mandatory_tool_call=mandatory_tool_call,
                 event_bus=event_bus, subtask_id=subtask_id, agent_name=agent_name,
                 pause_event=pause_event, cancel_event=cancel_event,
             )
@@ -540,6 +545,7 @@ class LLMClient:
         temperature: float | None,
         max_tokens: int | None,
         max_history_chars: int | None = None,
+        mandatory_tool_call: bool = False,
         event_bus: EventBus | None = None,
         subtask_id: int | None = None,
         agent_name: str | None = None,
@@ -579,16 +585,27 @@ class LLMClient:
                 f"  Parameters:\n" + "\n".join(param_lines)
             )
 
-        tool_instructions = (
-            "\n\n## AVAILABLE TOOLS\n\n"
-            "You have access to these tools. To call a tool, respond with ONLY "
-            "a JSON block like this:\n\n"
-            '```json\n{"name": "tool_name", "arguments": {"param": "value"}}\n```\n\n'
-            "After calling a tool, you will receive the result and can then "
-            "answer the question. If you do NOT need a tool, respond with your "
-            "answer directly as plain text (no JSON).\n\n"
-            + "\n".join(tool_desc_parts)
-        )
+        if mandatory_tool_call:
+            tool_instructions = (
+                "\n\n## AVAILABLE TOOLS\n\n"
+                "You MUST call one of these tools. Do NOT respond with plain text. "
+                "Respond ONLY with a JSON block:\n\n"
+                '```json\n{"name": "tool_name", "arguments": {"param": "value"}}\n```\n\n'
+                "After the tool result is returned, you may call another tool or "
+                "give your final summary.\n\n"
+                + "\n".join(tool_desc_parts)
+            )
+        else:
+            tool_instructions = (
+                "\n\n## AVAILABLE TOOLS\n\n"
+                "You have access to these tools. To call a tool, respond with ONLY "
+                "a JSON block like this:\n\n"
+                '```json\n{"name": "tool_name", "arguments": {"param": "value"}}\n```\n\n'
+                "After calling a tool, you will receive the result and can then "
+                "answer the question. If you do NOT need a tool, respond with your "
+                "answer directly as plain text (no JSON).\n\n"
+                + "\n".join(tool_desc_parts)
+            )
 
         logger.log(VERBOSE2, f"[LLM] Tool instruction block ({len(tool_instructions)} chars):\n{tool_instructions}")
 
@@ -714,6 +731,22 @@ class LLMClient:
             )
 
             if not parsed_calls:
+                if mandatory_tool_call and iteration < max_iterations - 1:
+                    # Re-prompt: the model gave a text answer when it must call a tool
+                    logger.log(
+                        VERBOSE1,
+                        f"[LLM] Agent '{agent_name}': text response when tool call required. "
+                        f"Re-prompting (iter {iteration + 1}/{max_iterations}).",
+                    )
+                    conversation.append({"role": "assistant", "content": content})
+                    conversation.append({
+                        "role": "user",
+                        "content": (
+                            "You must call a tool. Respond ONLY with a JSON block:\n"
+                            '```json\n{"name": "tool_name", "arguments": {"param": "value"}}\n```'
+                        ),
+                    })
+                    continue
                 # No tool call — this is the final answer
                 logger.log(
                     VERBOSE1,
