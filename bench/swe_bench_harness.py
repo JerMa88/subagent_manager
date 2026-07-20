@@ -352,8 +352,25 @@ async def run_instance(
             elapsed_seconds=time.monotonic() - t0,
         )
 
-    # Step 2: Build agents scoped to the repo
-    agents = build_swe_bench_agents(repo_dir)
+    # Step 2: Build agents scoped to the repo.
+    # Use a short symlink /tmp/repo -> repo_dir so agent prompts never hit token-
+    # truncation on deeply-nested absolute paths like
+    # /Users/zma/Documents/programs/subagent_manager/bench/repos/sympy__sympy/...
+    # Models see only "/tmp/repo/sympy/printing/mathematica.py" which is 40 chars
+    # instead of 100+, well within any token budget.
+    short_repo = "/tmp/repo"
+    try:
+        if os.path.islink(short_repo) or os.path.exists(short_repo):
+            os.remove(short_repo)
+        os.symlink(repo_dir, short_repo)
+        prompt_repo_dir = short_repo
+        logger.log(VERBOSE1, f"[HARNESS] Symlink: {short_repo} → {repo_dir}")
+    except Exception as e:
+        # Symlink creation failed (permissions, etc.) — fall back to real path
+        logger.warning(f"[HARNESS] Could not create /tmp/repo symlink: {e}. Using full path.")
+        prompt_repo_dir = repo_dir
+
+    agents = build_swe_bench_agents(repo_dir, prompt_repo_dir=prompt_repo_dir)
 
     # Step 3: Create the manager with SWE-bench prompts
     manager = SubAgentManager(
@@ -377,7 +394,7 @@ async def run_instance(
         system_prompt = build_swe_bench_orchestrator_prompt(
             available_agents=agent_descriptions,
             max_subtasks=manager.max_subtasks,
-            repo_dir=repo_dir,
+            repo_dir=prompt_repo_dir,
         )
 
         user_content = f"## GITHUB ISSUE\n\n{goal}"

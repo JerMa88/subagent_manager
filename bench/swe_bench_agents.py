@@ -33,21 +33,27 @@ from bench.swe_bench_tools import (
 )
 
 
-def build_swe_bench_agents(repo_dir: str) -> list[SubAgentConfig]:
+def build_swe_bench_agents(repo_dir: str, prompt_repo_dir: str | None = None) -> list[SubAgentConfig]:
     """
     Build SWE-bench agent configurations scoped to a repository directory.
 
     Args:
-        repo_dir: Absolute path to the checked-out repository.
+        repo_dir: Absolute path to the checked-out repository (used for tool working_dir
+            and FileReaderTool allowed_dirs — the real filesystem path).
+        prompt_repo_dir: Short path shown to the model in prompts (e.g. /tmp/repo symlink).
+            Defaults to repo_dir if not provided.
 
     Returns:
         List of SubAgentConfig instances for the SWE-bench pipeline.
     """
+    if prompt_repo_dir is None:
+        prompt_repo_dir = repo_dir
+
     # ------------------------------------------------------------------
     # Shared tool instances scoped to the repo
     # ------------------------------------------------------------------
     file_reader = FileReaderTool(
-        allowed_dirs=[repo_dir],
+        allowed_dirs=[repo_dir, "/tmp/repo", "/tmp"],
         working_dir=repo_dir,
         max_content_length=12000,
     )
@@ -77,12 +83,12 @@ Your job is to write and run a minimal Python script that demonstrates the bug.
 
 ## ENVIRONMENT
 
-The repository is at: `{repo_dir}`
+The repository is at: `{prompt_repo_dir}`
 **File paths for tools:**
 - Relative to repo root: `sympy/printing/mathematica.py` (preferred for view_file/grep_search)
-- Full absolute: `{repo_dir}/sympy/printing/mathematica.py`
+- Full absolute: `{prompt_repo_dir}/sympy/printing/mathematica.py`
 - NEVER use `/testbed`, `/workspace`, or any other path
-- shell_exec cwd is `{repo_dir}` — use relative paths or absolute paths, NOT `bench/repos/...`
+- shell_exec cwd is `{prompt_repo_dir}` — use relative paths or absolute paths, NOT `bench/repos/...`
 
 ## WORKFLOW — FOLLOW EXACTLY
 
@@ -91,12 +97,12 @@ The repository is at: `{repo_dir}`
    - Imports the relevant module from the repo:
      ```python
      import sys
-     sys.path.insert(0, '{repo_dir}')
+     sys.path.insert(0, '{prompt_repo_dir}')
      ```
    - Calls the buggy function
    - Prints 'BUG REPRODUCED' if the bug is present
    - Prints 'BUG FIXED' if the behavior is correct
-3. Call **shell_exec** with: `PYTHONPATH={repo_dir} python /tmp/reproduce.py`
+3. Call **shell_exec** with: `PYTHONPATH={prompt_repo_dir} python /tmp/reproduce.py`
 4. Report the exact output
 
 ## RULES
@@ -113,12 +119,12 @@ Your job is to FIX a software bug by replacing ONLY the broken lines.
 
 ## ENVIRONMENT
 
-The repository is at: `{repo_dir}`
+The repository is at: `{prompt_repo_dir}`
 **File paths for tools:**
 - Relative to repo root: `sympy/printing/mathematica.py` (preferred)
-- Full absolute: `{repo_dir}/sympy/printing/mathematica.py`
+- Full absolute: `{prompt_repo_dir}/sympy/printing/mathematica.py`
 - NEVER use `/testbed`, `/workspace`, or `bench/repos/...` as relative paths
-- shell_exec cwd is `{repo_dir}`
+- shell_exec cwd is `{prompt_repo_dir}`
 
 ## CRITICAL WORKFLOW — YOU MUST FOLLOW THESE STEPS:
 
@@ -154,7 +160,7 @@ and will PASS (GREEN) after a correct fix is applied.
 
 ## ENVIRONMENT
 
-The repository is at: `{repo_dir}`
+The repository is at: `{prompt_repo_dir}`
 - Use relative paths from repo root: `sympy/printing/mathematica.py`
 - NEVER use `/testbed`, `/workspace`, or `bench/repos/...` as a relative prefix
 
@@ -166,8 +172,8 @@ The repository is at: `{repo_dir}`
    - Use pytest conventions (function names start with test_)
    - Test EXACTLY the broken behaviour described in the issue
    - The test must FAIL on the current (broken) code
-   - Use sys.path.insert(0, '{repo_dir}') at the top
-4. Call **shell_exec** to run: `PYTHONPATH={repo_dir} python -m pytest /tmp/test_bug.py -v`
+   - Use sys.path.insert(0, '{prompt_repo_dir}') at the top
+4. Call **shell_exec** to run: `PYTHONPATH={prompt_repo_dir} python -m pytest /tmp/test_bug.py -v`
 5. Confirm the test FAILS (exit code 1) — this is the RED state
 6. Report the test file contents and the failure output
 
