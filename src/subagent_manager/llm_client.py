@@ -739,11 +739,25 @@ class LLMClient:
                         f"Re-prompting (iter {iteration + 1}/{max_iterations}).",
                     )
                     conversation.append({"role": "assistant", "content": content})
+                    # Trim context before re-prompt: keep system + last 2 exchanges.
+                    # This prevents the 4k-token wall where the model can only output
+                    # 24 completion tokens (not enough for a JSON tool call).
+                    if len(conversation) > 5:
+                        system_msg = conversation[0]
+                        recent = conversation[-4:]  # last 2 user+assistant pairs
+                        conversation = [system_msg] + recent
+                        logger.log(
+                            VERBOSE1,
+                            f"[LLM] Context trimmed for re-prompt: {len(conversation)} msgs kept",
+                        )
+                    # Build a concrete re-prompt with the first available tool name as example
+                    first_tool = tools[0].name if tools else "tool_name"
                     conversation.append({
                         "role": "user",
                         "content": (
-                            "You must call a tool. Respond ONLY with a JSON block:\n"
-                            '```json\n{"name": "tool_name", "arguments": {"param": "value"}}\n```'
+                            "You must call a tool. Respond ONLY with a JSON block, for example:\n"
+                            f'```json\n{{"name": "{first_tool}", "arguments": {{"param": "value"}}}}\n```\n'
+                            "Fill in the correct tool name and arguments for your task."
                         ),
                     })
                     continue
