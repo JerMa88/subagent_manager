@@ -1,0 +1,13 @@
+[
+  {
+    "instance_id": "sympy__sympy-15345",
+    "success": true,
+    "patch_generated": false,
+    "error": "",
+    "elapsed_seconds": 547.1601474999916,
+    "total_tokens": 52228,
+    "total_tool_calls": 11,
+    "diagnosis": "REPRODUCE_INCONCLUSIVE: Max(2, x)",
+    "patch_length": 0
+  }
+]

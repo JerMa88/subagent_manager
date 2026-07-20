@@ -200,14 +200,14 @@ def _try_extract_and_write_code(
     repo_dir: str,
 ) -> bool:
     """
-    Fallback: extract code blocks from agent text answers and write them.
+    Fallback: extract and apply a surgical fix from the patch_writer's text answer.
 
-    When the model describes the fix as inline code instead of calling
-    write_file (common with smaller models), this function parses the
-    agent's text answer to find code blocks and writes them to the
-    appropriate files.
+    Strategy (in priority order):
+    1. Look for explicit old_str / new_str markers in the prose (most precise).
+    2. Look for a before/after code block pair (--- / +++ style or explicit labels).
+    3. Last resort: write the largest code block as the entire file.
 
-    Returns True if any files were written.
+    Returns True if any change was successfully applied.
     """
     # Find the patch_writer's result
     patch_writer_answer = ""
@@ -225,70 +225,101 @@ def _try_extract_and_write_code(
         f"[HARNESS] Attempting code extraction from {len(patch_writer_answer)}-char answer",
     )
 
-    # Extract code blocks with optional language specifier
-    code_blocks = re.findall(
-        r'```(?:python)?\s*\n(.*?)```',
-        patch_writer_answer,
-        re.DOTALL,
-    )
+    # --- Strategy 1: find old_str / new_str blocks -----------------------
+    # Handles patterns like:
+    #   old_str: ```\n...\n```   new_str: ```\n...\n```
+    #   "Replace:\n...\nWith:\n..."
+    old_new_patterns = [
+        # old_str / new_str with code fences
+        (
+            r'old_str[:\s]*```(?:\w+)?\n(.*?)```.*?new_str[:\s]*```(?:\w+)?\n(.*?)```',
+            re.DOTALL,
+        ),
+        # Replace X with Y (code fences)
+        (
+            r'[Rr]eplace[:\s]*```(?:\w+)?\n(.*?)```.*?[Ww]ith[:\s]*```(?:\w+)?\n(.*?)```',
+            re.DOTALL,
+        ),
+        # Before / After labels
+        (
+            r'[Bb]efore[:\s]*```(?:\w+)?\n(.*?)```.*?[Aa]fter[:\s]*```(?:\w+)?\n(.*?)```',
+            re.DOTALL,
+        ),
+    ]
 
-    if not code_blocks:
-        logger.log(VERBOSE1, "[HARNESS] No code blocks found in patch_writer answer")
-        return False
+    old_str: str | None = None
+    new_str: str | None = None
+    for pattern, flags in old_new_patterns:
+        m = re.search(pattern, patch_writer_answer, flags)
+        if m:
+            old_str = m.group(1)
+            new_str = m.group(2)
+            logger.log(
+                VERBOSE1,
+                f"[HARNESS] Found old/new pair via pattern (old={len(old_str)} chars, "
+                f"new={len(new_str)} chars)",
+            )
+            break
 
-    logger.log(
-        VERBOSE1,
-        f"[HARNESS] Found {len(code_blocks)} code block(s)",
-    )
-
-    # Try to identify the target file path from the text
-    # Look for patterns like "in mathematica.py", "file: path/to/file.py",
-    # or "sympy/printing/mathematica.py"
+    # --- Identify the target file in all cases ---------------------------
     file_patterns = re.findall(
         r'(?:(?:in|file|modify|fix|update|change)\s*[:=]?\s*)?'
-        r'[`\'"]*([a-zA-Z_][\w/]*\.py)[`\'"]*',
+        r'[`\'"]*([a-zA-Z_][\w/.-]*\.py)[`\'"]*',
         patch_writer_answer,
     )
-
-    # Also search the broader result context
     if not file_patterns:
         full_text = result.answer or ""
         for sr in result.subtask_results:
             full_text += " " + (sr.answer or "")
-        file_patterns = re.findall(
-            r'([a-zA-Z_][\w/]*\.py)',
-            full_text,
-        )
+        file_patterns = re.findall(r'([a-zA-Z_][\w/.-]*\.py)', full_text)
 
-    # Use the largest code block (most likely the full file)
-    largest_block = max(code_blocks, key=len)
-
-    if not file_patterns:
-        logger.warning(
-            "[HARNESS] Code block found but no target file path identified"
-        )
-        return False
-
-    # Filter to the most likely target file
-    # Prefer paths that match common patterns in the code blocks
-    target_path = None
+    target_path: str | None = None
     for fp in file_patterns:
+        # Strip leading path prefixes the model may have hallucinated
+        for prefix in [f"{repo_dir}/", "/tmp/repo/", "/testbed/"]:
+            if fp.startswith(prefix):
+                fp = fp[len(prefix):]
         full_path = os.path.join(repo_dir, fp)
         if os.path.exists(full_path):
             target_path = full_path
             break
 
     if not target_path:
-        # Try the first pattern anyway
-        target_path = os.path.join(repo_dir, file_patterns[0])
-
-    if not os.path.exists(target_path):
-        logger.warning(
-            f"[HARNESS] Target file does not exist: {target_path}"
-        )
+        logger.warning("[HARNESS] Fallback: no target file path found")
         return False
 
-    # Write the code
+    # --- Apply Strategy 1 if we have old/new pair -------------------------
+    if old_str is not None and new_str is not None:
+        try:
+            content = Path(target_path).read_text(encoding="utf-8", errors="replace")
+            if old_str in content:
+                new_content = content.replace(old_str, new_str, 1)
+                Path(target_path).write_text(new_content, encoding="utf-8")
+                logger.log(
+                    VERBOSE1,
+                    f"[HARNESS] FALLBACK str_replace applied to {target_path} "
+                    f"({len(old_str)} → {len(new_str)} chars)",
+                )
+                return True
+            else:
+                logger.warning(
+                    f"[HARNESS] old_str not found in {target_path} — "
+                    "falling through to code-block write"
+                )
+        except Exception as e:
+            logger.error(f"[HARNESS] Fallback str_replace failed: {e}")
+
+    # --- Strategy 2 / 3: extract code blocks and write largest -----------
+    code_blocks = re.findall(
+        r'```(?:python)?\s*\n(.*?)```',
+        patch_writer_answer,
+        re.DOTALL,
+    )
+    if not code_blocks:
+        logger.log(VERBOSE1, "[HARNESS] No code blocks found in patch_writer answer")
+        return False
+
+    largest_block = max(code_blocks, key=len)
     logger.log(
         VERBOSE1,
         f"[HARNESS] FALLBACK: Writing {len(largest_block)} chars to {target_path}",
