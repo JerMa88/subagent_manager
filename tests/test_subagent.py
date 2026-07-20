@@ -39,6 +39,15 @@ class TestSubAgentConfig:
         assert config.max_tool_iterations == 5
         assert config.max_answer_tokens == 512
         assert config.temperature == 0.0
+        assert config.max_history_chars is None  # P0c: per-agent context window override
+
+    def test_max_history_chars_can_be_set(self):
+        config = SubAgentConfig(
+            name="patch_writer",
+            description="Patch writer with large context",
+            max_history_chars=25_000,
+        )
+        assert config.max_history_chars == 25_000
 
     def test_custom_config(self):
         tool = MockTool()

@@ -1,0 +1,13 @@
+[
+  {
+    "instance_id": "sympy__sympy-15345",
+    "success": true,
+    "patch_generated": false,
+    "error": "",
+    "elapsed_seconds": 838.814521458,
+    "total_tokens": 77604,
+    "total_tool_calls": 39,
+    "diagnosis": "## Bug Analysis: `mathematica_code(Max(x,2))` Returns Wrong Output\n\n### Root Cause\n\nThe bug is in **`sympy/sympy/printing/mathematica.py`**. The analysis from Subtask 1 identified two issues:\n\n1. **Missing function mapping**: SymPy's `Max`/`Min` are not included in the known functions table, which uses lowercase capitalization for Mathematica symbols.\n2. **Wrong bracket syntax**: When a function is found but not properly mapped, it falls through to default formatting that uses parentheses instea",
+    "patch_length": 0
+  }
+]

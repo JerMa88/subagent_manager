@@ -64,6 +64,12 @@ class SubAgentConfig:
     temperature: float = 0.0
     """Temperature for this agent's LLM calls."""
 
+    max_history_chars: int | None = None
+    """Override for sliding-window context pruning threshold.
+    If None, uses the LLM client's class-level MAX_HISTORY_CHARS default (10,000).
+    Set higher for agents that need to retain large file contents (e.g., patch_writer).
+    """
+
 
 @dataclass
 class SubAgentResult:
@@ -219,6 +225,7 @@ class SubAgent:
                     max_iterations=self.config.max_tool_iterations,
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_answer_tokens,
+                    max_history_chars=self.config.max_history_chars,
                     event_bus=event_bus,
                     subtask_id=subtask_id,
                     agent_name=self.config.name,

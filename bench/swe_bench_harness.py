@@ -303,6 +303,135 @@ def _try_extract_and_write_code(
 
 
 # ---------------------------------------------------------------------------
+# Harness-level file pre-loading helper (P0 fix)
+# ---------------------------------------------------------------------------
+
+def _inject_file_content_for_patch_writer(
+    subtasks: list,
+    repo_dir: str,
+    prompt_repo_dir: str,
+    goal: str,
+    logger,
+) -> list:
+    """
+    Deterministically pre-load relevant source files into the patch_writer subtask.
+
+    The patch_writer is supposed to call str_replace immediately, but can only do
+    so if it already has the file content. We read the files from disk here (in the
+    harness process) and inject them into the subtask context field — no agent tool
+    calls required.
+
+    Strategy:
+    1. Parse the patch_writer task description for .py file paths (relative or absolute).
+    2. Try those paths against repo_dir.
+    3. Fallback: grep repo for Python files whose names appear in the issue text.
+    4. Read up to 3 files (max 8000 chars each), prepend line numbers, and append
+       to the patch_writer subtask's context.
+    """
+    import re
+
+    from subagent_manager.strategies.base import SubtaskDef  # local import avoids circular
+
+    result_subtasks = []
+    for subtask in subtasks:
+        if subtask.agent_name != "patch_writer":
+            result_subtasks.append(subtask)
+            continue
+
+        # --- Collect candidate file paths ---
+        candidates: list[str] = []
+
+        # 1. Parse .py paths from the task description
+        py_pat = re.compile(r'[\w/.-]+\.py')
+        for m in py_pat.finditer(subtask.task):
+            raw = m.group(0)
+            # Strip common wrong prefixes that the orchestrator may write
+            for prefix in [f"{prompt_repo_dir}/", f"{repo_dir}/", "bench/repos/", "/testbed/"]:
+                if raw.startswith(prefix):
+                    raw = raw[len(prefix):]
+            candidates.append(raw)
+
+        # 2. Fallback: extract .py filenames from the issue text
+        if not candidates:
+            for m in py_pat.finditer(goal):
+                candidates.append(m.group(0))
+
+        # 3. Deduplicate preserving order
+        seen: set[str] = set()
+        unique_candidates: list[str] = []
+        for c in candidates:
+            if c not in seen:
+                seen.add(c)
+                unique_candidates.append(c)
+
+        # --- Read files from disk ---
+        file_blocks: list[str] = []
+        for rel_path in unique_candidates[:5]:  # try up to 5 candidates
+            if len(file_blocks) >= 3:
+                break
+            abs_path = Path(repo_dir) / rel_path
+            if not abs_path.is_file():
+                # try stripping leading path components
+                parts = Path(rel_path).parts
+                for start in range(1, len(parts)):
+                    candidate_abs = Path(repo_dir) / Path(*parts[start:])
+                    if candidate_abs.is_file():
+                        abs_path = candidate_abs
+                        rel_path = str(Path(*parts[start:]))
+                        break
+                else:
+                    continue
+
+            try:
+                content = abs_path.read_text(encoding="utf-8", errors="replace")
+                # Add line numbers so old_str can be copied exactly
+                lines = content.splitlines()
+                numbered = "\n".join(f"{i+1:4d}: {ln}" for i, ln in enumerate(lines))
+                # Truncate if enormous
+                MAX_FILE_CHARS = 8000
+                if len(numbered) > MAX_FILE_CHARS:
+                    numbered = numbered[:MAX_FILE_CHARS] + "\n... [truncated]"
+                file_blocks.append(
+                    f"=== FILE: {rel_path} ({len(lines)} lines) ===\n{numbered}\n"
+                )
+                logger.log(
+                    VERBOSE1,
+                    f"[HARNESS] Pre-loaded {rel_path} ({len(lines)} lines) "
+                    f"into patch_writer context",
+                )
+            except Exception as exc:
+                logger.warning(f"[HARNESS] Could not pre-load {abs_path}: {exc}")
+
+        if file_blocks:
+            injection = (
+                "\n\n## PRE-LOADED FILE CONTENT\n\n"
+                "The following files are already loaded for you. "
+                "Use the line-numbered content to write old_str for str_replace.\n\n"
+                + "\n".join(file_blocks)
+            )
+            new_context = (subtask.context or "") + injection
+            subtask = SubtaskDef(
+                id=subtask.id,
+                task=subtask.task,
+                agent_name=subtask.agent_name,
+                depends_on=subtask.depends_on,
+                context=new_context,
+            )
+            logger.log(
+                VERBOSE1,
+                f"[HARNESS] patch_writer context enriched: "
+                f"{len(file_blocks)} file(s) pre-loaded "
+                f"({len(injection):,} chars injected)",
+            )
+        else:
+            logger.warning("[HARNESS] patch_writer: no source files found to pre-load")
+
+        result_subtasks.append(subtask)
+
+    return result_subtasks
+
+
+# ---------------------------------------------------------------------------
 # Core pipeline runner
 # ---------------------------------------------------------------------------
 
@@ -436,6 +565,19 @@ async def run_instance(
                     context=item.get("context", ""),
                 )
             )
+
+        # ── Harness-level file pre-loading (deterministic, P0 fix) ─────────────
+        # The patch_writer agent must call str_replace immediately — it cannot
+        # waste iterations reading the file. We pre-load relevant source files
+        # from disk here and inject them into the patch_writer subtask context.
+        # This is done by the harness (not the agent) for determinism.
+        subtasks = _inject_file_content_for_patch_writer(
+            subtasks=subtasks,
+            repo_dir=repo_dir,
+            prompt_repo_dir=prompt_repo_dir,
+            goal=goal,
+            logger=logger,
+        )
 
         return ExecutionPlan(subtasks=subtasks), plan_data
 

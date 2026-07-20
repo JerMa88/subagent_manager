@@ -69,88 +69,77 @@ def build_swe_bench_agents(repo_dir: str, prompt_repo_dir: str | None = None) ->
     dir_list = DirectoryListTool(working_dir=repo_dir)
     grep = GrepTool(working_dir=repo_dir)
 
-    # New surgical-edit tools (P1)
+    # Surgical-edit tools
     str_replace = StrReplaceTool(working_dir=repo_dir)
     view_file = ViewFileTool(working_dir=repo_dir)
 
     # ------------------------------------------------------------------
-    # System prompts — explicit workflows override the "be concise" default
+    # System prompts
     # ------------------------------------------------------------------
 
     reproducer_system_prompt = f"""You are **reproducer**, a bug reproduction agent.
 
-Your job is to write and run a minimal Python script that demonstrates the bug.
-
 ## ENVIRONMENT
 
-The repository is at: `{prompt_repo_dir}`
-**File paths for tools:**
-- Relative to repo root: `sympy/printing/mathematica.py` (preferred for view_file/grep_search)
-- Full absolute: `{prompt_repo_dir}/sympy/printing/mathematica.py`
-- NEVER use `/testbed`, `/workspace`, or any other path
-- shell_exec cwd is `{prompt_repo_dir}` — use relative paths or absolute paths, NOT `bench/repos/...`
+Repository: `{prompt_repo_dir}`
+File paths: relative to repo root (e.g. `sympy/printing/mathematica.py`) OR absolute.
+NEVER use /testbed or bench/repos/... paths.
+shell_exec cwd = `{prompt_repo_dir}`
 
-## WORKFLOW — FOLLOW EXACTLY
+## YOUR JOB — DO THIS IN ORDER, NO DEVIATIONS
 
-1. Call **view_file** or **grep_search** to understand the relevant API
-2. Call **write_file** to write /tmp/reproduce.py that:
-   - Imports the relevant module from the repo:
-     ```python
-     import sys
-     sys.path.insert(0, '{prompt_repo_dir}')
-     ```
-   - Calls the buggy function
-   - Prints 'BUG REPRODUCED' if the bug is present
-   - Prints 'BUG FIXED' if the behavior is correct
-3. Call **shell_exec** with: `PYTHONPATH={prompt_repo_dir} python /tmp/reproduce.py`
-4. Report the exact output
+**STEP 1 (MANDATORY — DO THIS FIRST):** Call **write_file** to create `/tmp/reproduce.py`.
+The script MUST:
+  - Start with: `import sys; sys.path.insert(0, '{prompt_repo_dir}')`
+  - Import and call the buggy function from the task description
+  - Print exactly `BUG REPRODUCED` if the bug is present
+  - Print exactly `BUG FIXED` if the behavior is correct
+
+**STEP 2:** Call **shell_exec** with: `PYTHONPATH={prompt_repo_dir} python /tmp/reproduce.py`
+
+**STEP 3:** Report the EXACT output — copy it verbatim.
 
 ## RULES
 
-- You MUST call write_file to create /tmp/reproduce.py — describing it is not enough
-- You MUST call shell_exec to run it — assuming it works is not evidence
-- Keep the script minimal (< 30 lines); the goal is to isolate the bug, not test everything
-- If the import fails, use shell_exec to install the package or add it to PYTHONPATH
+- You MUST call write_file FIRST — do not grep or explore before writing
+- You MUST call shell_exec to run it — do not assume it works
+- The script must be < 30 lines
+- If the task description includes the expected API call, use it directly; do not guess
 """
 
     patch_writer_system_prompt = f"""You are **patch_writer**, a surgical code patching agent.
 
-Your job is to FIX a software bug by replacing ONLY the broken lines.
-
 ## ENVIRONMENT
 
-The repository is at: `{prompt_repo_dir}`
-**File paths for tools:**
-- Relative to repo root: `sympy/printing/mathematica.py` (preferred)
-- Full absolute: `{prompt_repo_dir}/sympy/printing/mathematica.py`
-- NEVER use `/testbed`, `/workspace`, or `bench/repos/...` as relative paths
-- shell_exec cwd is `{prompt_repo_dir}`
+Repository: `{prompt_repo_dir}`
+File paths: relative to repo root (e.g. `sympy/printing/mathematica.py`) OR absolute.
+NEVER use /testbed, /workspace, or bench/repos/... paths.
 
-## CRITICAL WORKFLOW — YOU MUST FOLLOW THESE STEPS:
+## YOUR JOB
 
-1. Call **view_file** to read the relevant section (use start_line/end_line to zoom in)
-2. Identify the EXACT lines that need changing
-3. Call **str_replace** with:
-   - path = the file to modify (relative to repo root OR absolute)
-   - old_str = the EXACT current code (copy from view_file output, character-perfect)
-   - new_str = the corrected code
+The file content you need to fix is provided in your CONTEXT below.
+You MUST call **str_replace** to apply the fix.
+
+## MANDATORY FIRST STEP
+
+**Call str_replace NOW.** Do not call view_file first. The file content is in your context.
+
+str_replace arguments:
+  - path = the file path (relative to repo root, e.g. `sympy/printing/mathematica.py`)
+  - old_str = the EXACT lines to replace (copy verbatim from the file content in context)
+  - new_str = the corrected replacement code
+
+## IF str_replace RETURNS "not found"
+
+Only then call **view_file** with start_line/end_line to get the exact text, then retry str_replace.
 
 ## RULES
 
-- You MUST call str_replace — describing the fix in text is USELESS
-- Do NOT rewrite the entire file. Only change what is broken.
-- old_str must match EXACTLY including all whitespace and indentation
-- Copy old_str directly from view_file output — do not rephrase or re-indent
-- If str_replace returns "not found", call view_file again to get the exact text
-- Make MINIMAL changes — only modify the lines necessary to fix the bug
-
-## COMMON MISTAKE
-
-If str_replace returns "Error: old_str not found", it means your old_str has
-different whitespace, tabs vs spaces, or missing/extra lines. Call view_file
-with the exact line numbers and copy the text verbatim.
-
-After writing the fix, briefly summarize: what file, what lines, what changed.
+- You MUST call str_replace — a text description of the fix does NOTHING
+- old_str must match EXACTLY: same whitespace, indentation, line endings
+- Make MINIMAL changes — only the lines necessary to fix the bug
+- After str_replace succeeds, briefly summarize: file, lines changed, what changed
+- Do NOT call shell_exec — your only tools are str_replace, view_file, grep_search
 """
 
     test_generator_system_prompt = f"""You are **test_generator**, an automated test-writing agent.
@@ -160,7 +149,7 @@ and will PASS (GREEN) after a correct fix is applied.
 
 ## ENVIRONMENT
 
-The repository is at: `{prompt_repo_dir}`
+Repository: `{prompt_repo_dir}`
 - Use relative paths from repo root: `sympy/printing/mathematica.py`
 - NEVER use `/testbed`, `/workspace`, or `bench/repos/...` as a relative prefix
 
@@ -213,9 +202,9 @@ The repository is at: `{prompt_repo_dir}`
             ),
             system_prompt=reproducer_system_prompt,
             tools=[file_writer, shell_exec, view_file, grep],
-            max_tool_iterations=6,
+            max_tool_iterations=4,  # write_file + shell_exec + at most 2 debug steps
             max_answer_tokens=2048,
-            temperature=0.2,
+            temperature=0.1,  # Low temp: follow the script template exactly
         ),
         SubAgentConfig(
             name="code_explorer",
@@ -234,16 +223,19 @@ The repository is at: `{prompt_repo_dir}`
             name="patch_writer",
             description=(
                 "Applies a SURGICAL code fix for a diagnosed bug using str_replace. "
-                "Reads the exact lines to change with view_file, then calls str_replace "
-                "with old_str=<exact current code> and new_str=<corrected code>. "
+                "The file content is pre-loaded in context — patch_writer calls "
+                "str_replace immediately with old_str=<exact current code> and "
+                "new_str=<corrected code>. "
                 "NEVER rewrites the entire file. NEVER describes the fix in text only. "
                 "The fix is only complete when str_replace returns a success confirmation."
             ),
             system_prompt=patch_writer_system_prompt,
-            tools=[str_replace, view_file, grep, shell_exec],
-            max_tool_iterations=10,
+            # No shell_exec — prevents test-hunting drift that exhausts the iteration budget
+            tools=[str_replace, view_file, grep],
+            max_tool_iterations=6,
             max_answer_tokens=2048,
-            temperature=0.2,
+            max_history_chars=25_000,  # Large window to retain pre-loaded file content
+            temperature=0.1,  # Low temp: follow str_replace instructions exactly
         ),
         SubAgentConfig(
             name="test_generator",

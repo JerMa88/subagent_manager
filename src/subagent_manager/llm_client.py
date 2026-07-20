@@ -304,6 +304,7 @@ class LLMClient:
         max_iterations: int = 5,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        max_history_chars: int | None = None,
         event_bus: EventBus | None = None,
         subtask_id: int | None = None,
         agent_name: str | None = None,
@@ -330,6 +331,9 @@ class LLMClient:
             max_iterations: Hard cap on tool call rounds.
             temperature: Override default temperature.
             max_tokens: Override default max tokens.
+            max_history_chars: Per-call override for sliding-window pruning threshold.
+                If None, uses the class-level MAX_HISTORY_CHARS (default 10,000).
+                Set higher for agents that hold large file contents in context.
             event_bus: Optional event bus for GUI streaming.
             subtask_id: Subtask ID for event tagging.
             agent_name: Agent name for event tagging.
@@ -349,6 +353,7 @@ class LLMClient:
         else:
             return await self._tool_loop_prompt_based(
                 messages, tools, max_iterations, temperature, max_tokens,
+                max_history_chars=max_history_chars,
                 event_bus=event_bus, subtask_id=subtask_id, agent_name=agent_name,
                 pause_event=pause_event, cancel_event=cancel_event,
             )
@@ -534,6 +539,7 @@ class LLMClient:
         max_iterations: int,
         temperature: float | None,
         max_tokens: int | None,
+        max_history_chars: int | None = None,
         event_bus: EventBus | None = None,
         subtask_id: int | None = None,
         agent_name: str | None = None,
@@ -641,10 +647,11 @@ class LLMClient:
 
             # --- Sliding-window context pruning ---
             # Prevent context explosion: if conversation history exceeds
-            # MAX_HISTORY_CHARS, keep the system prompt + a summary marker +
+            # the threshold, keep the system prompt + a summary marker +
             # the last 6 messages (3 tool-call + result pairs).
+            history_limit = max_history_chars if max_history_chars is not None else self.MAX_HISTORY_CHARS
             total_chars = sum(len(m.get("content", "")) for m in conversation)
-            if total_chars > self.MAX_HISTORY_CHARS and len(conversation) > 6:
+            if total_chars > history_limit and len(conversation) > 6:
                 pruned = conversation[1:-6]
                 pruned_summary = (
                     f"[Context pruned: {len(pruned)} older messages summarized to save "

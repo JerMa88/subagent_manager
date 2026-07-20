@@ -1,0 +1,13 @@
+[
+  {
+    "instance_id": "sympy__sympy-15345",
+    "success": true,
+    "patch_generated": false,
+    "error": "",
+    "elapsed_seconds": 407.7472413330106,
+    "total_tokens": 55016,
+    "total_tool_calls": 23,
+    "diagnosis": "## Synthesis: Mathematica Code Printing Bug with `Max`/`Min`\n\n### Problem Summary\nWhen calling `mathematica_code(Max(x, 2))`, the expected output is `'Max[x,2]'` (valid Mathematica syntax), but instead the function returns `'Max(2, x)'` \u2014 which uses parentheses and reorders arguments incorrectly.\n\n### Root Cause Analysis\nBased on the subagent investigation:\n\n- **Location**: The bug is in `sympy/printing/mathematica.py`, which handles conversion of SymPy expressions to Mathematica code syntax.\n- ",
+    "patch_length": 0
+  }
+]
