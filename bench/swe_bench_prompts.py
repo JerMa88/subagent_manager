@@ -14,21 +14,41 @@ from typing import Any
 def build_swe_bench_orchestrator_prompt(
     available_agents: list[dict[str, str]],
     max_subtasks: int = 6,
+    repo_dir: str | None = None,
 ) -> str:
     """
     Build the orchestrator system prompt for SWE-bench tasks.
 
     This prompt instructs the planner to follow a structured
     software debugging workflow rather than a generic task decomposition.
+
+    Args:
+        available_agents: List of agent dicts with 'name' and 'description'.
+        max_subtasks: Maximum number of subtasks in the plan.
+        repo_dir: Absolute path to the checked-out repository. If provided,
+            it is injected into the prompt so agents never hallucinate /testbed.
     """
     agent_list = "\n".join(
         f"- **{a['name']}**: {a['description']}" for a in available_agents
     )
 
+    repo_env_block = ""
+    if repo_dir:
+        repo_env_block = f"""
+## ENVIRONMENT
+
+The repository is checked out at: `{repo_dir}`
+
+IMPORTANT: All file paths MUST use this real path.
+NEVER use `/testbed`, `/workspace`, or any other hardcoded path.
+The working directory for all shell commands is `{repo_dir}`.
+All subtask descriptions you write must reference `{repo_dir}` when mentioning file paths.
+"""
+
     return f"""You are a software engineering orchestrator. Your job is to decompose
 a GitHub issue into a plan of subtasks that will diagnose the bug, find the
 relevant code, generate a fix, and verify it.
-
+{repo_env_block}
 ## AVAILABLE AGENTS
 
 {agent_list}

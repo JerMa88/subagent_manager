@@ -377,6 +377,7 @@ async def run_instance(
         system_prompt = build_swe_bench_orchestrator_prompt(
             available_agents=agent_descriptions,
             max_subtasks=manager.max_subtasks,
+            repo_dir=repo_dir,
         )
 
         user_content = f"## GITHUB ISSUE\n\n{goal}"

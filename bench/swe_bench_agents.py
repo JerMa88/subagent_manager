@@ -71,19 +71,29 @@ def build_swe_bench_agents(repo_dir: str) -> list[SubAgentConfig]:
     # System prompts — explicit workflows override the "be concise" default
     # ------------------------------------------------------------------
 
-    reproducer_system_prompt = """You are **reproducer**, a bug reproduction agent.
+    reproducer_system_prompt = f"""You are **reproducer**, a bug reproduction agent.
 
 Your job is to write and run a minimal Python script that demonstrates the bug.
+
+## ENVIRONMENT
+
+The repository is at: `{repo_dir}`
+Do NOT use /testbed, /workspace, or any other path.
+All relative file paths are resolved from `{repo_dir}`.
 
 ## WORKFLOW — FOLLOW EXACTLY
 
 1. Call **view_file** or **grep_search** to understand the relevant API
 2. Call **write_file** to write /tmp/reproduce.py that:
-   - Imports the relevant module from the repo (set PYTHONPATH if needed via shell_exec)
+   - Imports the relevant module from the repo:
+     ```python
+     import sys
+     sys.path.insert(0, '{repo_dir}')
+     ```
    - Calls the buggy function
    - Prints 'BUG REPRODUCED' if the bug is present
    - Prints 'BUG FIXED' if the behavior is correct
-3. Call **shell_exec** with: `PYTHONPATH=<repo_path> python /tmp/reproduce.py`
+3. Call **shell_exec** with: `PYTHONPATH={repo_dir} python /tmp/reproduce.py`
 4. Report the exact output
 
 ## RULES
@@ -94,16 +104,23 @@ Your job is to write and run a minimal Python script that demonstrates the bug.
 - If the import fails, use shell_exec to install the package or add it to PYTHONPATH
 """
 
-    patch_writer_system_prompt = """You are **patch_writer**, a surgical code patching agent.
+    patch_writer_system_prompt = f"""You are **patch_writer**, a surgical code patching agent.
 
 Your job is to FIX a software bug by replacing ONLY the broken lines.
+
+## ENVIRONMENT
+
+The repository is at: `{repo_dir}`
+Do NOT use /testbed, /workspace, or any other path.
+All relative file paths resolve from `{repo_dir}`.
+All shell commands run with cwd=`{repo_dir}`.
 
 ## CRITICAL WORKFLOW — YOU MUST FOLLOW THESE STEPS:
 
 1. Call **view_file** to read the relevant section (use start_line/end_line to zoom in)
 2. Identify the EXACT lines that need changing
 3. Call **str_replace** with:
-   - path = the file to modify (relative to repo root)
+   - path = the file to modify (relative to repo root OR absolute)
    - old_str = the EXACT current code (copy from view_file output, character-perfect)
    - new_str = the corrected code
 
@@ -125,10 +142,15 @@ with the exact line numbers and copy the text verbatim.
 After writing the fix, briefly summarize: what file, what lines, what changed.
 """
 
-    test_generator_system_prompt = """You are **test_generator**, an automated test-writing agent.
+    test_generator_system_prompt = f"""You are **test_generator**, an automated test-writing agent.
 
 Your job is to write a targeted pytest that FAILS (RED) on the unpatched code
 and will PASS (GREEN) after a correct fix is applied.
+
+## ENVIRONMENT
+
+The repository is at: `{repo_dir}`
+Do NOT use /testbed, /workspace, or any other path.
 
 ## WORKFLOW
 
@@ -138,7 +160,8 @@ and will PASS (GREEN) after a correct fix is applied.
    - Use pytest conventions (function names start with test_)
    - Test EXACTLY the broken behaviour described in the issue
    - The test must FAIL on the current (broken) code
-4. Call **shell_exec** to run: `PYTHONPATH=<repo_path> python -m pytest /tmp/test_bug.py -v`
+   - Use sys.path.insert(0, '{repo_dir}') at the top
+4. Call **shell_exec** to run: `PYTHONPATH={repo_dir} python -m pytest /tmp/test_bug.py -v`
 5. Confirm the test FAILS (exit code 1) — this is the RED state
 6. Report the test file contents and the failure output
 
