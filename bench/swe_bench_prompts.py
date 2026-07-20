@@ -39,10 +39,11 @@ def build_swe_bench_orchestrator_prompt(
 
 The repository is checked out at: `{repo_dir}`
 
-IMPORTANT: All file paths MUST use this real path.
-NEVER use `/testbed`, `/workspace`, or any other hardcoded path.
-The working directory for all shell commands is `{repo_dir}`.
-All subtask descriptions you write must reference `{repo_dir}` when mentioning file paths.
+**File path rules for subtask descriptions:**
+- Use paths RELATIVE TO THE REPO ROOT for file access tools: e.g., `sympy/printing/mathematica.py`
+- OR use the full absolute path: e.g., `{repo_dir}/sympy/printing/mathematica.py`
+- NEVER use `/testbed`, `/workspace`, or any other Docker/container path
+- The working directory for all shell commands is `{repo_dir}`
 """
 
     return f"""You are a software engineering orchestrator. Your job is to decompose

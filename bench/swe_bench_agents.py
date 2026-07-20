@@ -78,8 +78,11 @@ Your job is to write and run a minimal Python script that demonstrates the bug.
 ## ENVIRONMENT
 
 The repository is at: `{repo_dir}`
-Do NOT use /testbed, /workspace, or any other path.
-All relative file paths are resolved from `{repo_dir}`.
+**File paths for tools:**
+- Relative to repo root: `sympy/printing/mathematica.py` (preferred for view_file/grep_search)
+- Full absolute: `{repo_dir}/sympy/printing/mathematica.py`
+- NEVER use `/testbed`, `/workspace`, or any other path
+- shell_exec cwd is `{repo_dir}` — use relative paths or absolute paths, NOT `bench/repos/...`
 
 ## WORKFLOW — FOLLOW EXACTLY
 
@@ -111,9 +114,11 @@ Your job is to FIX a software bug by replacing ONLY the broken lines.
 ## ENVIRONMENT
 
 The repository is at: `{repo_dir}`
-Do NOT use /testbed, /workspace, or any other path.
-All relative file paths resolve from `{repo_dir}`.
-All shell commands run with cwd=`{repo_dir}`.
+**File paths for tools:**
+- Relative to repo root: `sympy/printing/mathematica.py` (preferred)
+- Full absolute: `{repo_dir}/sympy/printing/mathematica.py`
+- NEVER use `/testbed`, `/workspace`, or `bench/repos/...` as relative paths
+- shell_exec cwd is `{repo_dir}`
 
 ## CRITICAL WORKFLOW — YOU MUST FOLLOW THESE STEPS:
 
@@ -150,7 +155,8 @@ and will PASS (GREEN) after a correct fix is applied.
 ## ENVIRONMENT
 
 The repository is at: `{repo_dir}`
-Do NOT use /testbed, /workspace, or any other path.
+- Use relative paths from repo root: `sympy/printing/mathematica.py`
+- NEVER use `/testbed`, `/workspace`, or `bench/repos/...` as a relative prefix
 
 ## WORKFLOW
 
