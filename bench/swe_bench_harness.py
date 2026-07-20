@@ -474,6 +474,8 @@ async def run_instance(
     instance: SWEBenchInstance,
     model: str,
     work_dir: str,
+    repo_symlink: str = "/tmp/repo",
+    reproduce_script: str = "/tmp/reproduce.py",
     verbosity: int = 1,
     max_subtasks: int = 6,
 ) -> RunResult:
@@ -484,6 +486,8 @@ async def run_instance(
         instance: The SWE-bench instance to solve.
         model: LLM model identifier (e.g., 'ollama/ornith').
         work_dir: Directory for cloned repos.
+        repo_symlink: Path to create the repo symlink.
+        reproduce_script: Path to use for the reproduce script.
         verbosity: Logging verbosity (0, 1, or 2).
         max_subtasks: Maximum subtasks for the orchestrator.
 
@@ -876,10 +880,15 @@ async def run_harness(
             f"{'='*60}"
         )
 
+        repo_symlink = f"/tmp/repo_{instance.instance_id.replace('/', '__')}"
+        reproduce_script = f"/tmp/reproduce_{instance.instance_id.replace('/', '__')}.py"
+
         run_result = await run_instance(
             instance=instance,
             model=model,
             work_dir=work_dir,
+            repo_symlink=repo_symlink,
+            reproduce_script=reproduce_script,
             verbosity=verbosity,
             max_subtasks=max_subtasks,
         )
