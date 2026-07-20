@@ -750,13 +750,13 @@ class LLMClient:
                             VERBOSE1,
                             f"[LLM] Context trimmed for re-prompt: {len(conversation)} msgs kept",
                         )
-                    # Build a concrete re-prompt with the first available tool name as example
-                    first_tool = tools[0].name if tools else "tool_name"
+                    # Build a concrete re-prompt using a generic example so the model doesn't
+                    # blindly copy placeholder arguments for a real tool.
                     conversation.append({
                         "role": "user",
                         "content": (
                             "You must call a tool. Respond ONLY with a JSON block, for example:\n"
-                            f'```json\n{{"name": "{first_tool}", "arguments": {{"param": "value"}}}}\n```\n'
+                            '```json\n{"name": "some_tool", "arguments": {"arg1": "value"}}\n```\n'
                             "Fill in the correct tool name and arguments for your task."
                         ),
                     })

@@ -1,0 +1,35 @@
+[
+  {
+    "instance_id": "django__django-11099",
+    "success": true,
+    "patch_generated": true,
+    "error": "",
+    "elapsed_seconds": 588.777756541007,
+    "total_tokens": 49216,
+    "total_tool_calls": 16,
+    "diagnosis": "REPRODUCE_INCONCLUSIVE: \nTraceback (most recent call last):\n  File \"/tmp/reproduce.py\", line 2, in <module>\n    from django.contrib.auth.validators import ASCIIUsernameValidator, UnicodeUsernameValidator\n  File \"/tmp/repo/django/contrib/auth/__init__.py\", line 7, in <module>\n    from django.middleware.csrf import rotate_to",
+    "patch_length": 900
+  },
+  {
+    "instance_id": "django__django-11179",
+    "success": true,
+    "patch_generated": false,
+    "error": "",
+    "elapsed_seconds": 596.021474832989,
+    "total_tokens": 57430,
+    "total_tool_calls": 24,
+    "diagnosis": "REPRODUCE_INCONCLUSIVE: \nTraceback (most recent call last):\n  File \"/tmp/reproduce.py\", line 12, in <module>\n    django.setup()\n    ~~~~~~~~~~~~^^\n  File \"/tmp/repo/django/__init__.py\", line 16, in setup\n    from django.urls import set_script_prefix\n  File \"/tmp/repo/django/urls/__init__.py\", line 1, in <module>\n    from .",
+    "patch_length": 0
+  },
+  {
+    "instance_id": "sympy__sympy-15345",
+    "success": true,
+    "patch_generated": false,
+    "error": "",
+    "elapsed_seconds": 560.5212921249913,
+    "total_tokens": 52508,
+    "total_tool_calls": 17,
+    "diagnosis": "REPRODUCE_INCONCLUSIVE: Max(x, 2)\nMin(x, 2)",
+    "patch_length": 0
+  }
+]

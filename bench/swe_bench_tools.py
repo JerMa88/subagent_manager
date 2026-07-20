@@ -511,6 +511,18 @@ class StrReplaceTool(BaseTool):
 
         # Resolve relative paths against working_dir
         path = Path(path_str)
+        if path.is_absolute() and not path.exists() and self.working_dir:
+            # Try stripping prefixes until we find a match in working_dir
+            parts = path.parts
+            for i in range(len(parts)):
+                # Skip the root '/' part
+                if parts[i] == '/' or parts[i] == '\\':
+                    continue
+                candidate = Path(self.working_dir).joinpath(*parts[i:])
+                if candidate.exists():
+                    path = candidate
+                    break
+
         if not path.is_absolute() and self.working_dir:
             path = Path(self.working_dir) / path
         path = path.resolve()
