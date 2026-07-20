@@ -842,6 +842,9 @@ async def run_harness(
     if work_dir is None:
         work_dir = tempfile.mkdtemp(prefix="swebench_")
     os.makedirs(work_dir, exist_ok=True)
+    # Always use absolute path — prevents git diff and Path.resolve() mismatches
+    # when the process cwd differs during async execution or between instances.
+    work_dir = os.path.abspath(work_dir)
 
     logger.log(
         VERBOSE1,
