@@ -457,6 +457,65 @@ async def run_instance(
         _try_extract_and_write_code(result, repo_dir)
         patch = extract_patch(repo_dir)
 
+    # Step 6: Independent reproduce.py validation (skeptical senior programmer check).
+    # The harness itself — NOT the test_runner subagent — re-runs the reproduction
+    # script and records the objective signal. This cannot be faked by a subagent
+    # self-report.
+    diagnosis = result.answer[:500] if result.answer else ""
+    reproduce_script = "/tmp/reproduce.py"
+    if os.path.exists(reproduce_script):
+        logger.log(
+            VERBOSE1,
+            f"[HARNESS] Running independent reproduce validation: {reproduce_script}",
+        )
+        try:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = repo_dir + (
+                os.pathsep + env.get("PYTHONPATH", "")
+            )
+            rep_proc = subprocess.run(
+                ["python", reproduce_script],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=repo_dir,
+                env=env,
+            )
+            stdout = rep_proc.stdout.strip()
+            stderr = rep_proc.stderr.strip()
+            combined = stdout + ("\n" + stderr if stderr else "")
+
+            if "BUG FIXED" in stdout:
+                diagnosis = f"REPRODUCE_PASS: {combined[:300]}"
+                logger.log(
+                    VERBOSE1,
+                    f"[HARNESS] ✅ REPRODUCE_PASS — /tmp/reproduce.py output: {stdout[:200]}",
+                )
+            elif "BUG REPRODUCED" in stdout:
+                # Script ran fine but fix wasn't applied
+                diagnosis = f"REPRODUCE_FAIL (patch did not fix bug): {combined[:300]}"
+                logger.warning(
+                    f"[HARNESS] ❌ REPRODUCE_FAIL — patch did not fix bug. "
+                    f"reproduce.py output: {stdout[:200]}"
+                )
+            else:
+                # Script ran but printed neither marker — treat as inconclusive
+                diagnosis = f"REPRODUCE_INCONCLUSIVE: {combined[:300]}"
+                logger.warning(
+                    f"[HARNESS] ⚠ REPRODUCE_INCONCLUSIVE — reproduce.py output: {combined[:200]}"
+                )
+        except subprocess.TimeoutExpired:
+            diagnosis = "REPRODUCE_TIMEOUT: /tmp/reproduce.py timed out after 30s"
+            logger.warning("[HARNESS] reproduce.py timed out after 30s")
+        except Exception as e:
+            diagnosis = f"REPRODUCE_ERROR: {e}"
+            logger.warning(f"[HARNESS] reproduce.py execution failed: {e}")
+    else:
+        logger.log(
+            VERBOSE1,
+            "[HARNESS] /tmp/reproduce.py not found — reproducer agent may not have run",
+        )
+
     elapsed = time.monotonic() - t0
 
     prediction = SWEBenchPrediction(
@@ -473,14 +532,15 @@ async def run_instance(
         elapsed_seconds=elapsed,
         total_tokens=result.total_tokens,
         total_tool_calls=result.total_tool_calls,
-        diagnosis=result.answer[:500] if result.answer else "",
+        diagnosis=diagnosis,
     )
 
     logger.log(
         VERBOSE1,
         f"[HARNESS] Instance {instance.instance_id} completed in {elapsed:.1f}s: "
         f"patch={'YES' if patch else 'NO'} ({len(patch)} chars), "
-        f"tokens={result.total_tokens:,}, tool_calls={result.total_tool_calls}",
+        f"tokens={result.total_tokens:,}, tool_calls={result.total_tool_calls}, "
+        f"diagnosis={diagnosis[:80]}",
     )
 
     return run_result
