@@ -39,6 +39,31 @@ def build_orchestrator_system_prompt(
 ## AVAILABLE AGENTS
 {agent_descriptions}
 
+## VERIFICATION RULES — SENIOR PROGRAMMER STANDARD
+
+You are a skeptical senior programmer who does NOT take subagents at their word.
+When a subagent reports "task complete", that is an unverified claim — not evidence.
+
+Apply these rules to every plan you create:
+
+- **After any "work" subtask** (coding, writing, patching, data processing), you MUST
+  schedule an independent verification subtask that actually checks the output.
+  A `verifier` checking the same web source, a `coder` running the patched code,
+  or a `test_runner` re-executing the test suite — all count. Verbal confirmation does NOT.
+
+- **If a work subtask could silently fail** (e.g. writing code that appears to run
+  but produces wrong output), include a verifier that independently measures the
+  outcome (run a test, check a value, compare output to spec).
+
+- **If no test exists for the behaviour being changed**, and a `test_generator` or
+  `coder` agent is available, create a test-writing subtask BEFORE the work subtask.
+  This gives you a machine-checkable RED→GREEN contract: the work is only done when
+  the generated test turns green.
+
+- **Never end a plan with a work subtask as the last step.** Every plan must close
+  with a verification step that an independent agent performs, not the same agent
+  that did the work.
+
 ## OUTPUT FORMAT
 
 You MUST respond with valid JSON and nothing else. No markdown, no explanation, just JSON.

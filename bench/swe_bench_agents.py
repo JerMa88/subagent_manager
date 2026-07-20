@@ -1,14 +1,21 @@
 """
 SWE-bench specialized agent configurations.
 
-Defines four agents optimized for the SWE-bench code debugging workflow:
+Defines six agents optimized for the SWE-bench code debugging workflow:
 1. issue_analyzer  — Understands the bug from the problem statement + code
-2. code_explorer   — Navigates the repo to find relevant files
-3. patch_writer    — Generates the actual code fix
-4. test_runner     — Runs tests to verify the patch
+2. reproducer      — Writes and runs a minimal script to confirm BUG REPRODUCED
+3. code_explorer   — Navigates the repo to find relevant files
+4. patch_writer    — Generates the actual code fix (surgical str_replace only)
+5. test_generator  — Writes a targeted pytest that is RED before fix, GREEN after
+6. test_runner     — Independently verifies the fix by re-running the reproduce script
 
 Each agent is pre-configured with appropriate tools scoped to the
 target repository's working directory.
+
+The orchestrator embodies the SKEPTICAL SENIOR PROGRAMMER principle:
+it never trusts a subagent's self-report. After every patch_writer,
+test_runner independently verifies the outcome. No plan ends without
+a green verification signal.
 """
 
 from __future__ import annotations
@@ -21,6 +28,8 @@ from bench.swe_bench_tools import (
     FileWriterTool,
     GrepTool,
     ShellExecTool,
+    StrReplaceTool,
+    ViewFileTool,
 )
 
 
@@ -34,7 +43,9 @@ def build_swe_bench_agents(repo_dir: str) -> list[SubAgentConfig]:
     Returns:
         List of SubAgentConfig instances for the SWE-bench pipeline.
     """
+    # ------------------------------------------------------------------
     # Shared tool instances scoped to the repo
+    # ------------------------------------------------------------------
     file_reader = FileReaderTool(
         allowed_dirs=[repo_dir],
         working_dir=repo_dir,
@@ -46,36 +57,101 @@ def build_swe_bench_agents(repo_dir: str) -> list[SubAgentConfig]:
     shell_exec = ShellExecTool(working_dir=repo_dir)
     shell_exec.max_result_length = 8000  # Test output can be verbose
 
+    # file_writer kept for reproducer/test_generator (writing /tmp scripts)
     file_writer = FileWriterTool(working_dir=repo_dir)
+
     dir_list = DirectoryListTool(working_dir=repo_dir)
     grep = GrepTool(working_dir=repo_dir)
 
-    # Custom system prompt for the patch_writer — overrides the default
-    # "be concise" prompt which causes the model to describe fixes in text
-    # instead of actually applying them via write_file.
-    patch_writer_system_prompt = """You are **patch_writer**, a code patching agent.
+    # New surgical-edit tools (P1)
+    str_replace = StrReplaceTool(working_dir=repo_dir)
+    view_file = ViewFileTool(working_dir=repo_dir)
 
-Your job is to FIX a software bug by modifying source code files.
+    # ------------------------------------------------------------------
+    # System prompts — explicit workflows override the "be concise" default
+    # ------------------------------------------------------------------
 
-## CRITICAL WORKFLOW — YOU MUST FOLLOW THESE STEPS:
+    reproducer_system_prompt = """You are **reproducer**, a bug reproduction agent.
 
-1. **READ** the file that needs fixing using the `read_file` tool
-2. **UNDERSTAND** the bug based on the diagnosis from previous agents
-3. **WRITE** the corrected file using the `write_file` tool with the COMPLETE fixed file content
+Your job is to write and run a minimal Python script that demonstrates the bug.
+
+## WORKFLOW — FOLLOW EXACTLY
+
+1. Call **view_file** or **grep_search** to understand the relevant API
+2. Call **write_file** to write /tmp/reproduce.py that:
+   - Imports the relevant module from the repo (set PYTHONPATH if needed via shell_exec)
+   - Calls the buggy function
+   - Prints 'BUG REPRODUCED' if the bug is present
+   - Prints 'BUG FIXED' if the behavior is correct
+3. Call **shell_exec** with: `PYTHONPATH=<repo_path> python /tmp/reproduce.py`
+4. Report the exact output
 
 ## RULES
 
-- You MUST call `write_file` with the complete corrected file content. This is NOT optional.
-- Simply describing the fix in text is USELESS — you must actually write the file.
-- Make MINIMAL changes — only modify the lines necessary to fix the bug.
-- Keep all other code, comments, and formatting exactly as they are.
-- If you need to understand the code structure first, use `grep_search` or `shell_exec`.
-
-## RESPONSE FORMAT
-
-After writing the fix, respond with a brief summary of what you changed and why.
-Do NOT include the full file content in your text response — it's already written to disk.
+- You MUST call write_file to create /tmp/reproduce.py — describing it is not enough
+- You MUST call shell_exec to run it — assuming it works is not evidence
+- Keep the script minimal (< 30 lines); the goal is to isolate the bug, not test everything
+- If the import fails, use shell_exec to install the package or add it to PYTHONPATH
 """
+
+    patch_writer_system_prompt = """You are **patch_writer**, a surgical code patching agent.
+
+Your job is to FIX a software bug by replacing ONLY the broken lines.
+
+## CRITICAL WORKFLOW — YOU MUST FOLLOW THESE STEPS:
+
+1. Call **view_file** to read the relevant section (use start_line/end_line to zoom in)
+2. Identify the EXACT lines that need changing
+3. Call **str_replace** with:
+   - path = the file to modify (relative to repo root)
+   - old_str = the EXACT current code (copy from view_file output, character-perfect)
+   - new_str = the corrected code
+
+## RULES
+
+- You MUST call str_replace — describing the fix in text is USELESS
+- Do NOT rewrite the entire file. Only change what is broken.
+- old_str must match EXACTLY including all whitespace and indentation
+- Copy old_str directly from view_file output — do not rephrase or re-indent
+- If str_replace returns "not found", call view_file again to get the exact text
+- Make MINIMAL changes — only modify the lines necessary to fix the bug
+
+## COMMON MISTAKE
+
+If str_replace returns "Error: old_str not found", it means your old_str has
+different whitespace, tabs vs spaces, or missing/extra lines. Call view_file
+with the exact line numbers and copy the text verbatim.
+
+After writing the fix, briefly summarize: what file, what lines, what changed.
+"""
+
+    test_generator_system_prompt = """You are **test_generator**, an automated test-writing agent.
+
+Your job is to write a targeted pytest that FAILS (RED) on the unpatched code
+and will PASS (GREEN) after a correct fix is applied.
+
+## WORKFLOW
+
+1. Read the bug description and understand what behaviour is broken
+2. Call **view_file** or **grep_search** to find the relevant code and existing tests
+3. Call **write_file** to write a new pytest file at /tmp/test_bug.py:
+   - Use pytest conventions (function names start with test_)
+   - Test EXACTLY the broken behaviour described in the issue
+   - The test must FAIL on the current (broken) code
+4. Call **shell_exec** to run: `PYTHONPATH=<repo_path> python -m pytest /tmp/test_bug.py -v`
+5. Confirm the test FAILS (exit code 1) — this is the RED state
+6. Report the test file contents and the failure output
+
+## RULES
+
+- You MUST write and run the test — do not just describe it
+- The test must be self-contained and not require repo installation
+- Keep it focused: one function, one assertion per bug
+"""
+
+    # ------------------------------------------------------------------
+    # Agent definitions
+    # ------------------------------------------------------------------
 
     return [
         SubAgentConfig(
@@ -89,8 +165,22 @@ Do NOT include the full file content in your text response — it's already writ
             ),
             tools=[file_reader, grep, dir_list],
             max_tool_iterations=5,
-            max_answer_tokens=1024,
+            max_answer_tokens=2048,
             temperature=0.3,
+        ),
+        SubAgentConfig(
+            name="reproducer",
+            description=(
+                "Creates and runs a minimal Python script (/tmp/reproduce.py) that "
+                "demonstrates the bug. The script prints 'BUG REPRODUCED' when the "
+                "bug is present and 'BUG FIXED' when the fix is applied. "
+                "Returns the exact shell output — not a verbal confirmation."
+            ),
+            system_prompt=reproducer_system_prompt,
+            tools=[file_writer, shell_exec, view_file, grep],
+            max_tool_iterations=6,
+            max_answer_tokens=2048,
+            temperature=0.2,
         ),
         SubAgentConfig(
             name="code_explorer",
@@ -102,36 +192,51 @@ Do NOT include the full file content in your text response — it's already writ
             ),
             tools=[file_reader, grep, dir_list, shell_exec],
             max_tool_iterations=8,
-            max_answer_tokens=1024,
+            max_answer_tokens=2048,
             temperature=0.2,
         ),
         SubAgentConfig(
             name="patch_writer",
             description=(
-                "Generates and APPLIES a code fix for a diagnosed bug. You MUST "
-                "use the read_file tool to read the current file content, then "
-                "use the write_file tool to write the corrected version. Simply "
-                "describing the fix in text is NOT sufficient — you must actually "
-                "call write_file with the complete corrected file content. The fix "
-                "should be minimal — change only what is necessary to resolve the "
-                "issue without altering unrelated code."
+                "Applies a SURGICAL code fix for a diagnosed bug using str_replace. "
+                "Reads the exact lines to change with view_file, then calls str_replace "
+                "with old_str=<exact current code> and new_str=<corrected code>. "
+                "NEVER rewrites the entire file. NEVER describes the fix in text only. "
+                "The fix is only complete when str_replace returns a success confirmation."
             ),
             system_prompt=patch_writer_system_prompt,
-            tools=[file_reader, file_writer, grep, shell_exec],
+            tools=[str_replace, view_file, grep, shell_exec],
             max_tool_iterations=10,
+            max_answer_tokens=2048,
+            temperature=0.2,
+        ),
+        SubAgentConfig(
+            name="test_generator",
+            description=(
+                "Writes a targeted pytest (/tmp/test_bug.py) that FAILS on the "
+                "current broken code and will PASS after a correct fix. "
+                "Runs the test immediately to confirm it is RED. "
+                "Provides a machine-checkable contract for the fix."
+            ),
+            system_prompt=test_generator_system_prompt,
+            tools=[file_writer, shell_exec, view_file, grep],
+            max_tool_iterations=5,
             max_answer_tokens=2048,
             temperature=0.2,
         ),
         SubAgentConfig(
             name="test_runner",
             description=(
-                "Runs the test suite (or specific tests) to verify that a patch "
-                "resolves the reported issue without breaking existing functionality. "
-                "Executes test commands and interprets the results."
+                "Independently verifies a patch by re-running /tmp/reproduce.py "
+                "and/or the relevant test suite. Does NOT rely on patch_writer's "
+                "own report. Returns the ACTUAL shell output — pass or fail. "
+                "If /tmp/test_bug.py exists, also runs it and reports RED/GREEN. "
+                "This is the final verification gate; the orchestrator must not "
+                "accept any fix without this agent's independent confirmation."
             ),
             tools=[shell_exec, file_reader],
             max_tool_iterations=5,
-            max_answer_tokens=1024,
+            max_answer_tokens=2048,
             temperature=0.1,
         ),
     ]

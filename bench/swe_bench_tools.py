@@ -445,3 +445,259 @@ class GrepTool(BaseTool):
         except Exception as e:
             logger.error(f"[TOOL:grep_search] Failed: {e}")
             return f"Error during search: {str(e)}"
+
+
+class StrReplaceTool(BaseTool):
+    """
+    Replace an exact substring in a file with new content.
+
+    This is the PREFERRED tool for applying code fixes. It replaces only
+    the specific lines that need changing, requiring zero file reproduction.
+    The old_str must appear exactly once — this prevents accidental corruption.
+    """
+
+    name = "str_replace"
+    description = (
+        "Replace an exact string in a file with new content. "
+        "This is the PRIMARY way to fix bugs. Provide the exact "
+        "old_str to replace (must match exactly, including indentation "
+        "and newlines) and the new_str to replace it with. "
+        "The old_str must appear EXACTLY ONCE in the file."
+    )
+    parameters = [
+        ToolParameter(
+            name="path",
+            type="string",
+            description="File path relative to repo root (or absolute).",
+        ),
+        ToolParameter(
+            name="old_str",
+            type="string",
+            description=(
+                "The exact string to replace. Must match exactly, "
+                "including all whitespace and indentation. "
+                "Copy it directly from view_file output — do not paraphrase."
+            ),
+        ),
+        ToolParameter(
+            name="new_str",
+            type="string",
+            description="The replacement string to insert in place of old_str.",
+        ),
+    ]
+
+    # Conservative default — str_replace results are short (mini-diff confirmations)
+    max_result_length = 8000
+
+    def __init__(self, working_dir: str | None = None) -> None:
+        """
+        Initialize the str-replace tool.
+
+        Args:
+            working_dir: Base directory for resolving relative paths (repo root).
+        """
+        self.working_dir = working_dir
+
+    async def execute(self, **kwargs: Any) -> str:
+        """Replace an exact string in a file."""
+        path_str = kwargs.get("path", "")
+        old_str = kwargs.get("old_str", "")
+        new_str = kwargs.get("new_str", "")
+
+        if not path_str:
+            return "Error: No file path provided."
+        if not old_str:
+            return "Error: old_str is empty — nothing to replace."
+
+        # Resolve relative paths against working_dir
+        path = Path(path_str)
+        if not path.is_absolute() and self.working_dir:
+            path = Path(self.working_dir) / path
+        path = path.resolve()
+
+        logger.log(
+            VERBOSE1,
+            f"[TOOL:str_replace] Replacing in {path} "
+            f"(old_str={len(old_str)} chars, new_str={len(new_str)} chars)",
+        )
+
+        if not path.exists():
+            return f"Error: File not found: {path}"
+        if not path.is_file():
+            return f"Error: Path is not a file: {path}"
+
+        try:
+            content = path.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.error(f"[TOOL:str_replace] Failed to read {path}: {e}")
+            return f"Error reading file {path}: {str(e)}"
+
+        # Check for exactly one occurrence
+        count = content.count(old_str)
+        if count == 0:
+            # Give a helpful diagnostic: show nearby text
+            snippet = content[:500] if len(content) > 500 else content
+            return (
+                f"Error: old_str not found in {path.name}.\n"
+                f"The string you provided does not appear in the file.\n"
+                f"Make sure indentation and whitespace match exactly.\n\n"
+                f"File starts with:\n{snippet}"
+            )
+        if count > 1:
+            # Show line numbers of all occurrences to help debug
+            lines = content.split("\n")
+            hits = [
+                i + 1
+                for i, line in enumerate(lines)
+                if old_str.split("\n")[0] in line
+            ]
+            return (
+                f"Error: old_str appears {count} times in {path.name} "
+                f"(ambiguous replacement). "
+                f"Possible matches near lines: {hits[:5]}. "
+                f"Make old_str more specific to uniquely identify the target."
+            )
+
+        # Exactly one match — apply the replacement
+        new_content = content.replace(old_str, new_str, 1)
+
+        try:
+            path.write_text(new_content, encoding="utf-8")
+        except Exception as e:
+            logger.error(f"[TOOL:str_replace] Failed to write {path}: {e}")
+            return f"Error writing file {path}: {str(e)}"
+
+        # Build a compact confirmation diff
+        old_lines = old_str.split("\n")
+        new_lines = new_str.split("\n")
+        diff_lines = (
+            [f"- {l}" for l in old_lines[:10]]
+            + (["  [... truncated]"] if len(old_lines) > 10 else [])
+            + [f"+ {l}" for l in new_lines[:10]]
+            + (["  [... truncated]"] if len(new_lines) > 10 else [])
+        )
+        diff_preview = "\n".join(diff_lines)
+
+        logger.log(
+            VERBOSE1,
+            f"[TOOL:str_replace] Successfully replaced 1 occurrence in {path}",
+        )
+        return (
+            f"Replaced 1 occurrence in {path.name}\n"
+            f"--- old ---\n"
+            f"+++ new ---\n"
+            f"{diff_preview}"
+        )
+
+
+class ViewFileTool(BaseTool):
+    """
+    Read file contents with optional line-range restriction.
+
+    Mirrors FileReaderTool but lives in bench tools for isolation and uses
+    the SWE-agent-compatible name 'view_file' that models trained on
+    SWE-agent trajectories already know.
+    """
+
+    name = "view_file"
+    description = (
+        "View file contents with optional line range. "
+        "Use start_line and end_line to zoom into the relevant section "
+        "without reading the entire file. "
+        "Always read the file first before calling str_replace."
+    )
+    parameters = [
+        ToolParameter(
+            name="path",
+            type="string",
+            description="File path relative to repo root (or absolute).",
+        ),
+        ToolParameter(
+            name="start_line",
+            type="integer",
+            description="First line to return (1-indexed, inclusive). Default: 1.",
+            required=False,
+        ),
+        ToolParameter(
+            name="end_line",
+            type="integer",
+            description="Last line to return (1-indexed, inclusive). Default: end of file.",
+            required=False,
+        ),
+    ]
+
+    # Source files can be large — match FileReaderTool's limit
+    max_result_length = 12000
+
+    def __init__(self, working_dir: str | None = None) -> None:
+        """
+        Initialize the file viewer.
+
+        Args:
+            working_dir: Base directory for resolving relative paths (repo root).
+        """
+        self.working_dir = working_dir
+
+    async def execute(self, **kwargs: Any) -> str:
+        """View file contents with optional line range."""
+        path_str = kwargs.get("path", "")
+        start_line = kwargs.get("start_line", None)
+        end_line = kwargs.get("end_line", None)
+
+        if not path_str:
+            return "Error: No file path provided."
+
+        # Resolve relative paths against working_dir
+        path = Path(path_str)
+        if not path.is_absolute() and self.working_dir:
+            path = Path(self.working_dir) / path
+        path = path.resolve()
+
+        logger.log(
+            VERBOSE1,
+            f"[TOOL:view_file] Reading {path} "
+            f"(lines {start_line or 'start'}–{end_line or 'end'})",
+        )
+
+        if not path.exists():
+            return f"Error: File not found: {path}"
+        if not path.is_file():
+            return f"Error: Path is not a file: {path}"
+
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            logger.error(f"[TOOL:view_file] Failed to read {path}: {e}")
+            return f"Error reading file {path}: {str(e)}"
+
+        lines = raw.split("\n")
+        total_lines = len(lines)
+
+        # Clamp line range
+        start = max(1, int(start_line)) if start_line is not None else 1
+        end = min(total_lines, int(end_line)) if end_line is not None else total_lines
+
+        if start > total_lines:
+            return (
+                f"Error: start_line={start} exceeds file length ({total_lines} lines)."
+            )
+
+        selected = lines[start - 1 : end]
+
+        # Add line numbers to the output (helps the model with str_replace)
+        numbered = "\n".join(f"{start + i:5d} | {line}" for i, line in enumerate(selected))
+
+        header = (
+            f"File: {path}\n"
+            f"Lines {start}–{end} of {total_lines} total\n"
+            f"{'─' * 60}\n"
+        )
+
+        result = header + numbered
+
+        logger.log(
+            VERBOSE1,
+            f"[TOOL:view_file] Returned {len(selected)} lines ({len(result)} chars) from {path}",
+        )
+        return result
+
