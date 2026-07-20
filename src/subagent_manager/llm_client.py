@@ -112,6 +112,11 @@ class LLMClient:
         self.default_temperature = default_temperature
         self.default_max_tokens = default_max_tokens
 
+    # Maximum total chars across all conversation messages before pruning.
+    # Keeps the prompt-based tool loop inside small-model context windows.
+    # Override per-instance if needed: client.MAX_HISTORY_CHARS = 20_000
+    MAX_HISTORY_CHARS: int = 10_000
+
     @property
     def _supports_native_tools(self) -> bool:
         """Check if this model's provider supports LiteLLM native tool calling."""
@@ -625,6 +630,36 @@ class LLMClient:
                             subtask_id=subtask_id, agent_name=agent_name,
                             data={"iteration": iteration},
                         ))
+
+            # --- 80% budget warning ---
+            if iteration > 0 and iteration >= int(max_iterations * 0.8):
+                logger.warning(
+                    f"[LLM] Agent '{agent_name}' at {iteration + 1}/{max_iterations} iterations "
+                    f"({100 * (iteration + 1) // max_iterations}% of budget consumed). "
+                    "Consider increasing max_tool_iterations if the task is complex."
+                )
+
+            # --- Sliding-window context pruning ---
+            # Prevent context explosion: if conversation history exceeds
+            # MAX_HISTORY_CHARS, keep the system prompt + a summary marker +
+            # the last 6 messages (3 tool-call + result pairs).
+            total_chars = sum(len(m.get("content", "")) for m in conversation)
+            if total_chars > self.MAX_HISTORY_CHARS and len(conversation) > 6:
+                pruned = conversation[1:-6]
+                pruned_summary = (
+                    f"[Context pruned: {len(pruned)} older messages summarized to save "
+                    "space. Key findings from prior tool calls are in the most recent messages.]"
+                )
+                conversation = (
+                    [conversation[0], {"role": "user", "content": pruned_summary}]
+                    + conversation[-6:]
+                )
+                new_chars = sum(len(m.get("content", "")) for m in conversation)
+                logger.log(
+                    VERBOSE1,
+                    f"[LLM] Context pruned: {total_chars:,} \u2192 {new_chars:,} chars "
+                    f"({len(pruned)} messages summarized)",
+                )
 
             # No tools passed to LiteLLM — we handle it ourselves
             t_start = time.monotonic()
