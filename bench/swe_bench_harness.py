@@ -116,6 +116,10 @@ def clone_and_checkout(
         )
         # Reset existing clone
         subprocess.run(
+            ["git", "reset", "--hard", "HEAD"],
+            cwd=repo_dir, capture_output=True, check=True,
+        )
+        subprocess.run(
             ["git", "checkout", "-f", base_commit],
             cwd=repo_dir, capture_output=True, check=True,
         )
