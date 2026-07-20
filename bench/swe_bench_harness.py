@@ -488,16 +488,18 @@ async def run_instance(
     # Models see only "/tmp/repo/sympy/printing/mathematica.py" which is 40 chars
     # instead of 100+, well within any token budget.
     short_repo = "/tmp/repo"
+    abs_repo_dir = os.path.abspath(repo_dir)  # must be absolute for symlink to resolve from /tmp
     try:
         if os.path.islink(short_repo) or os.path.exists(short_repo):
             os.remove(short_repo)
-        os.symlink(repo_dir, short_repo)
+        os.symlink(abs_repo_dir, short_repo)
         prompt_repo_dir = short_repo
-        logger.log(VERBOSE1, f"[HARNESS] Symlink: {short_repo} → {repo_dir}")
+        logger.log(VERBOSE1, f"[HARNESS] Symlink: {short_repo} → {abs_repo_dir}")
     except Exception as e:
         # Symlink creation failed (permissions, etc.) — fall back to real path
         logger.warning(f"[HARNESS] Could not create /tmp/repo symlink: {e}. Using full path.")
-        prompt_repo_dir = repo_dir
+        abs_repo_dir = repo_dir
+        prompt_repo_dir = abs_repo_dir
 
     agents = build_swe_bench_agents(repo_dir, prompt_repo_dir=prompt_repo_dir)
 

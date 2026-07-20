@@ -1,0 +1,13 @@
+[
+  {
+    "instance_id": "sympy__sympy-15345",
+    "success": true,
+    "patch_generated": true,
+    "error": "",
+    "elapsed_seconds": 402.69377354200697,
+    "total_tokens": 62143,
+    "total_tool_calls": 24,
+    "diagnosis": "REPRODUCE_INCONCLUSIVE: \nTraceback (most recent call last):\n  File \"/tmp/reproduce.py\", line 3, in <module>\n    from sympy import symbols, Max\n  File \"/Users/zma/Documents/programs/subagent_manager/bench/repos/sympy__sympy/sympy/__init__.py\", line 60, in <module>\n    from .polys import *\n  File \"/Users/zma/Documents/progra",
+    "patch_length": 4779
+  }
+]

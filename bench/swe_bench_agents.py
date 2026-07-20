@@ -69,9 +69,14 @@ def build_swe_bench_agents(repo_dir: str, prompt_repo_dir: str | None = None) ->
     dir_list = DirectoryListTool(working_dir=repo_dir)
     grep = GrepTool(working_dir=repo_dir)
 
-    # Surgical-edit tools
+    # Surgical-edit tools — allowed_dirs includes both real path and /tmp/repo symlink
     str_replace = StrReplaceTool(working_dir=repo_dir)
     view_file = ViewFileTool(working_dir=repo_dir)
+    # Allow view_file to read via /tmp/repo symlink path
+    if hasattr(view_file, 'allowed_dirs'):
+        view_file.allowed_dirs = [repo_dir, "/tmp/repo", "/tmp"]
+    if hasattr(str_replace, 'allowed_dirs'):
+        str_replace.allowed_dirs = [repo_dir, "/tmp/repo", "/tmp"]
 
     # ------------------------------------------------------------------
     # System prompts
