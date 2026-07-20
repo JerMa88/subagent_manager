@@ -269,7 +269,7 @@ async def compare(
 
         # Reset repo for baseline
         import subprocess
-        subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=str(Path(work_dir) / inst.instance_id.replace("/", "__")), capture_output=True)
+        subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=str(Path(work_dir) / inst.repo.replace("/", "__")), capture_output=True)
 
         # --- Baseline ---
         print("  [2/2] Running BASELINE (single-agent)…")
