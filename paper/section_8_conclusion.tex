@@ -1,0 +1,41 @@
+% ============================================================
+% Section 8: Conclusion
+% ============================================================
+
+We presented \sysname, a three-level hierarchical multi-agent framework for
+autonomous software engineering, and demonstrated a statistically significant
+$2.21\times$ improvement in patch generation rate on SWE-bench Lite (17.7\%
+vs.\ 8.0\%, McNemar $\chi^2 = 11.36$, $p = 6.0 \times 10^{-4}$) over a
+controlled single-agent baseline, using an identical 7B AWQ-quantized model
+on a single consumer GPU.
+
+The core finding supports the hypothesis that the dominant failure mode for
+small open-weight models on complex software engineering tasks is
+\emph{context management}, not \emph{model capability}: hierarchical
+decomposition into fresh, domain-scoped context windows recovers substantial
+performance without any modification to model weights. The $52.8\%$
+reduction in per-agent token load---despite a $7.74\times$ increase in total
+pipeline token consumption---demonstrates that context isolation is a
+genuine architectural improvement, not merely a reallocation of the same
+work.
+
+The Skeptical Senior Programmer verification loop---in which an independent
+\texttt{test\_runner} agent re-executes the reproduction script against the
+patched repository, with no access to the \texttt{patch\_writer}'s reasoning
+trace---provides a mechanistic safeguard against sycophantic self-evaluation,
+a failure mode documented in both the LLM reasoning
+literature~\cite{huang2023self} and our own qualitative error analysis.
+
+Future work should: (1) integrate the SWE-bench Docker harness to measure
+test-suite resolution rather than patch generation; (2) resolve the sympy
+repository setup failure to evaluate all 300 instances fairly; (3) evaluate
+generalizability across model families and hardware configurations;
+(4) add a two-level ablation arm to isolate the marginal contribution of
+Domain Managers; and (5) explore training-time complementarity with
+reinforcement learning approaches~\cite{luo2025swerl} that can improve
+per-step reasoning quality, compounding with our inference-time architectural
+gains.
+
+The full system implementation, benchmark harness, and raw result data are
+released under the GPL-3.0 license at
+\texttt{https://github.com/JerMa88/subagent\_manager}.

@@ -1,0 +1,286 @@
+% ============================================================
+% Section 3: System Architecture
+% ============================================================
+
+We begin with a formal characterization of the agent, context window, and
+tool set that define the framework, then describe the three-level hierarchy
+in detail.
+
+% --------------------------------------------------------
+\subsection{Formal Preliminaries}
+\label{sec:arch:prelim}
+% --------------------------------------------------------
+
+\begin{definition}[Agent]
+\label{def:agent}
+An \textbf{agent} $A = (M, \tools, \ctx_0, p_{\text{sys}}, k_{\max},
+\ell_{\max})$ consists of: a language model $M$ parameterized by weights
+$\theta$; a finite tool set $\tools = \{t_1, \ldots, t_m\}$ where each
+$t_i : \Sigma^* \to \Sigma^*$ is a deterministic function mapping a JSON
+argument string to a string result; an initial context $\ctx_0 \in
+\Sigma^*$ (the system prompt); a task-injection prefix $p_{\text{sys}}$; a
+maximum tool-call budget $k_{\max} \in \mathbb{N}$; and a maximum answer
+token count $\ell_{\max} \in \mathbb{N}$.
+\end{definition}
+
+\begin{definition}[Context Window and Pollution Budget]
+\label{def:context}
+Let $\mathcal{C}_A^{(k)}$ denote the context window of agent $A$ after $k$
+tool iterations:
+\begin{equation}
+  \mathcal{C}_A^{(k)} \;=\; \ctx_0 \;\|\; p_{\text{sys}} \;\|\;
+  \bigoplus_{i=1}^{k} \bigl( \text{call}_i \;\|\; \text{obs}_i \bigr),
+\end{equation}
+where $\|$ denotes string concatenation and $\text{call}_i,\, \text{obs}_i$
+are the $i$-th tool call and its observation. The \textbf{pollution budget}
+$\rho_A^{(k)} = |\mathcal{C}_A^{(k)}| - |\ctx_0| - |p_{\text{sys}}|$
+measures the tokens consumed by tool history after $k$ iterations.
+\end{definition}
+
+\noindent Context isolation is achieved by assigning a fresh context
+$\mathcal{C}_A^{(0)}$ to every new agent invocation: the pollution budget
+is always $\rho_A^{(0)} = 0$ at the start of each worker agent's execution.
+
+% --------------------------------------------------------
+\subsection{Three-Level Hierarchical Architecture}
+\label{sec:arch:hierarchy}
+% --------------------------------------------------------
+
+\sysname implements a three-level hierarchy $(\Hm, \{\Dm_d\}_{d \in
+\mathcal{D}}, \{\Wa_i\}_{i \in \mathcal{I}})$ as illustrated in
+Figure~\ref{fig:arch}.
+
+\subsubsection{Level 1: High Manager ($\Hm$)}
+
+The singleton High Manager enforces the global four-phase verification
+pipeline. It is \emph{not} an LLM-planning agent: its execution graph is
+hardcoded as the fixed sequence in Algorithm~\ref{alg:pipeline}, preventing
+the class of planning failures (e.g., omitting the verification step) that
+afflict unconstrained orchestrators.
+
+\begin{algorithm}[t]
+\caption{Level 1 High Manager: Four-Phase Verification Pipeline}
+\label{alg:pipeline}
+\begin{algorithmic}[1]
+\Require Issue $q$, hints $h$, repository $\mathcal{R}$, max retries $k_{\max}$
+\Ensure Hierarchical result $r \gets ({\patch}, \textit{verified}, \textit{tokens})$
+\State $\text{ctx} \gets \textsc{BuildContext}(q, h, \mathcal{R})$
+\State \textbf{// Phase 1: Analysis Domain}
+\State $\text{diag} \gets \Dm_{\text{analysis}}.\textsc{Run}(q, \text{ctx})$
+\State \textbf{// Phase 2: Testing / Reproduction Domain}
+\State $\text{repro} \gets \Dm_{\text{testing}}.\textsc{Run}(q, \text{diag}, \text{ctx})$
+\State \textbf{// Phases 3--4: Patch--Verify Loop}
+\State $\text{verified} \gets \textbf{false}$; $\;\text{feedback} \gets \varnothing$; $\;k \gets 0$
+\While{$k \leq k_{\max}$ \textbf{and not} $\text{verified}$}
+  \State $\patch \gets \Dm_{\text{patch}}.\textsc{Run}(q, \text{diag}, \text{repro}, \text{feedback})$
+  \State $v \gets \Dm_{\text{testing}}.\textsc{Run}(\text{verify\_goal}, \text{ctx})$
+  \If{$\verify(\patch, v) = \texttt{BUG\_FIXED}$}
+    \State $\text{verified} \gets \textbf{true}$
+  \Else
+    \State $\text{feedback} \gets v.\textit{summary}$; $\;k \gets k + 1$
+  \EndIf
+\EndWhile
+\State \Return $(\patch, \text{verified}, \sum_d \text{tokens}(\Dm_d))$
+\end{algorithmic}
+\end{algorithm}
+
+\subsubsection{Level 2: Domain Managers ($\Dm_d$)}
+
+Each Domain Manager is a full \texttt{SubAgentManager} instance, equipped
+with its own LLM-driven planner that dynamically decomposes the domain
+goal into subtasks and routes them to Level 3 workers. Formally:
+
+\begin{definition}[Domain Manager]
+\label{def:domainmgr}
+A \textbf{Domain Manager} $\Dm_d = (\plan_d, \{\Wa_i\}_{i \in d},
+s_d, k_d^{\max})$ consists of: a planner LLM $\plan_d$ that produces a
+JSON subtask list $\pi = [(\text{id}, \text{task}, \text{agent},
+\text{depends\_on})]$; a set of worker agents $\{\Wa_i\}_{i \in d}$ scoped
+to domain $d$; an execution strategy $s_d \in \{\text{sequential},
+\text{parallel}, \text{adaptive}\}$; and a maximum subtask count $k_d^{\max}$.
+\end{definition}
+
+We instantiate three Domain Managers:
+
+\begin{itemize}
+  \item $\Dm_{\text{analysis}}$: workers $\{\texttt{issue\_analyzer},
+  \texttt{code\_explorer}\}$; strategy $s = \text{sequential}$. Responsible
+  for root-cause diagnosis and code localization.
+
+  \item $\Dm_{\text{testing}}$: workers $\{\texttt{reproducer},
+  \texttt{test\_generator}, \texttt{test\_runner}\}$; strategy $s =
+  \text{sequential}$. Responsible for bug reproduction and patch verification.
+
+  \item $\Dm_{\text{patch}}$: workers $\{\texttt{patch\_writer}\}$;
+  strategy $s = \text{sequential}$. Responsible for surgical code
+  modification. Contains exactly one worker to prevent conflicting edits.
+\end{itemize}
+
+Context passing between Domain Managers flows exclusively through the
+\textbf{structured summary interface}: the Level 1 manager receives
+$\Dm_d.\textit{summary} \in \Sigma^*$, a concise LLM-synthesized report
+(not the raw tool call history), and injects only this summary as context
+to the next Domain Manager. This bounded-length summary enforces that
+cross-domain information transfer scales as $O(1)$ in the number of tool
+calls made within the upstream domain, not $O(k \cdot \ell_{\text{tool}})$.
+
+\subsubsection{Level 3: Worker Agents ($\Wa_i$)}
+
+Each worker agent operates with a minimal, task-specific tool set. The
+principle of \textbf{tool minimality}---providing each agent with only the
+tools necessary for its specific task---serves two purposes: (i) it reduces
+the number of tokens consumed by the tool schema injected into the system
+prompt, and (ii) it eliminates failure modes that arise from agents using
+tools inappropriately (e.g., \texttt{patch\_writer} using
+\texttt{shell\_exec} to run tests rather than applying the patch, exhausting
+its iteration budget without modifying any code).
+
+Table~\ref{tab:workers} specifies the tool set, temperature, maximum
+iterations, and maximum answer tokens for each worker agent.
+
+\begin{table}[t]
+\centering
+\caption{Level 3 Worker Agent configurations. $k^{\max}$: max tool
+iterations; $\ell^{\max}$: max answer tokens; temp: LLM temperature.}
+\label{tab:workers}
+\small
+\begin{tabular}{llccc}
+\toprule
+\textbf{Agent} & \textbf{Tools} & $k^{\max}$ & $\ell^{\max}$ & \textbf{Temp} \\
+\midrule
+\texttt{issue\_analyzer}  & file\_reader, grep, dir\_list & 5  & 2048 & 0.3 \\
+\texttt{code\_explorer}   & file\_reader, grep, dir\_list, shell\_exec & 8  & 2048 & 0.2 \\
+\texttt{reproducer}       & file\_writer, shell\_exec, view\_file, grep & 5  & 2048 & 0.1 \\
+\texttt{test\_generator}  & file\_writer, shell\_exec, view\_file, grep & 5  & 2048 & 0.2 \\
+\texttt{patch\_writer}    & str\_replace, view\_file, grep & 6  & 2048 & 0.1 \\
+\texttt{test\_runner}     & shell\_exec, file\_reader & 5  & 2048 & 0.1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Mandatory Tool Enforcement.}
+The \texttt{reproducer} and \texttt{patch\_writer} agents are configured
+with \texttt{mandatory\_tool\_call=True}: the tool loop aborts with an
+error if the first model response does not contain a valid tool call.
+This prevents the failure mode where the model describes what it \emph{would}
+do in text rather than actually calling the tool---a systematic failure
+pattern we observed in 23\% of baseline attempts.
+
+\paragraph{Context Window Management.}
+Each worker agent's conversation history is managed by a sliding-window
+strategy: when the accumulated conversation history exceeds
+\texttt{max\_history\_chars} (25,000 chars for \texttt{patch\_writer};
+10,000 chars for all others), the middle messages are pruned and replaced
+by a one-line summary, always preserving the system prompt and the last
+three message pairs. This prevents context exhaustion on large files without
+discarding the most recent tool observations.
+
+% --------------------------------------------------------
+\subsection{The Skeptical Senior Programmer Verification Loop}
+\label{sec:arch:verification}
+% --------------------------------------------------------
+
+A fundamental limitation of single-agent systems is that the model that
+generated the patch also evaluates whether the patch is correct---a
+well-documented failure mode termed \emph{sycophantic self-evaluation}
+\cite{huang2023self,sycophancy2023}. We formalize our response to this
+problem.
+
+\begin{definition}[Verification Predicate]
+\label{def:verify}
+Let $\patch \in \Sigma^*$ be a unified diff patch and let $r$ be the output
+of executing the reproduction script \texttt{/tmp/reproduce.py} on the
+patched repository. The \textbf{verification predicate} is:
+\begin{equation}
+  \verify(\patch, r) \;=\;
+  \begin{cases}
+    \texttt{BUG\_FIXED} & \text{if } \texttt{``BUG FIXED''} \in r \;\text{or}\;
+    \texttt{``PASSED''} \subseteq r \\
+    \texttt{FAIL}       & \text{otherwise.}
+  \end{cases}
+\end{equation}
+\end{definition}
+
+\noindent The critical implementation invariant is that $r$ is always
+obtained by the \emph{independent} \texttt{test\_runner} agent, which
+receives only the verification goal and the repository path in its context.
+The \texttt{test\_runner} has no access to the \texttt{patch\_writer}'s
+conversation history and cannot observe what the patch is alleged to do ---
+it only observes the actual execution output.
+
+The Level 1 manager enforces a retry budget of $k_{\max} = 2$ patch
+attempts. On verification failure, the \texttt{test\_runner}'s output
+summary is injected verbatim into the next patch attempt's context as
+``Previous Verification Feedback,'' enabling the \texttt{patch\_writer} to
+condition on the failure signal without re-executing or re-reading the code.
+
+% --------------------------------------------------------
+\subsection{The \texttt{str\_replace} Surgical Edit Paradigm}
+\label{sec:arch:strreplce}
+% --------------------------------------------------------
+
+A key source of failure in naive LLM-based code editing is full-file
+rewriting: the model must faithfully reproduce thousands of characters of
+source code from memory, a task where small models hallucinate missing
+lines, drop imports, and corrupt indentation. We implement a
+\texttt{StrReplaceTool} that accepts three parameters:
+
+\begin{itemize}
+  \item \texttt{path}: file path relative to the repository root
+  \item \texttt{old\_str}: the exact character sequence to replace
+    (whitespace-sensitive, matched verbatim)
+  \item \texttt{new\_str}: the replacement character sequence
+\end{itemize}
+
+\noindent The tool verifies that \texttt{old\_str} appears \emph{exactly
+once} in the file (returning an error if zero or multiple matches are found),
+then writes the substituted file. This single-occurrence constraint is
+essential: it prevents the model from accidentally replacing the same
+fragment in multiple locations, a silent corruption that naive string
+replacement would permit.
+
+The \texttt{patch\_writer} system prompt instructs the model to call
+\texttt{str\_replace} \emph{before} any file-reading calls, using file
+content pre-loaded into its context by the Level 1 manager at plan-time.
+This pre-loading strategy---injecting the relevant file's content into the
+planner's context and then passing it as \texttt{context} to the
+\texttt{patch\_writer} subtask---eliminates the need for
+\texttt{patch\_writer} to call \texttt{view\_file} as its first action,
+saving one iteration of the $k_{\max} = 6$ budget.
+
+% --------------------------------------------------------
+\subsection{Inference Infrastructure}
+\label{sec:arch:infra}
+% --------------------------------------------------------
+
+All inference is served via a custom \texttt{FastAPI} application wrapping
+\texttt{vLLM}'s \texttt{AsyncLLMEngine}~\cite{kwon2023vllm} with the
+following configuration:
+
+\begin{itemize}
+  \item \textbf{Model}: \texttt{Qwen2.5-Coder-7B-Instruct-AWQ}~\cite{qwen25coder2024},
+    7B parameters, 4-bit AWQ quantization~\cite{lin2024awq}.
+  \item \textbf{Hardware}: NVIDIA RTX 5080 (16\,GB GDDR7, Blackwell
+    architecture). GPU memory utilization: 50\% (8\,GB), reserving 8\,GB
+    for the operating system and harness.
+  \item \textbf{Context window}: \texttt{max\_model\_len}~$= 16{,}384$ tokens.
+  \item \textbf{Attention backend}: FlashAttention~\cite{dao2022flashattention}
+    (FlashInfer disabled due to JIT compilation incompatibility with Blackwell).
+  \item \textbf{Quantization kernel}: PyTorch Marlin~\cite{frantar2024marlin}
+    for NVFP4 MoE layers (Blackwell-optimized path).
+  \item \textbf{CPU offload}: 4\,GB model weight offloading with prefetch
+    (offload group size 4, 2 in-group, 1-step prefetch) to accommodate the
+    7B model's full-precision buffers.
+  \item \textbf{Serving protocol}: OpenAI-compatible \texttt{/v1/chat/completions}
+    endpoint with real-time streaming; tool calls are parsed from raw model
+    text via a dual-format parser that handles both XML
+    (\texttt{<tool\_call>}) and JSON block formats.
+  \item \textbf{Auto-restart}: a wrapper shell script monitors the vLLM
+    process and relaunches it within 30 seconds on crash, providing
+    fault tolerance during the 10+ hour benchmark run.
+\end{itemize}
+
+\noindent The baseline and hierarchical conditions share the same vLLM
+server instance, API base URL, API key, and model name, ensuring that any
+observed performance difference is attributable to orchestration architecture
+rather than inference infrastructure.

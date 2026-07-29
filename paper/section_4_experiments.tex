@@ -1,0 +1,108 @@
+% ============================================================
+% Section 4: Experimental Setup
+% ============================================================
+
+% --------------------------------------------------------
+\subsection{Benchmark}
+\label{sec:exp:benchmark}
+% --------------------------------------------------------
+
+We evaluate on \textbf{SWE-bench Lite}~\cite{jimenez2024swebench}: 300
+instances drawn from 12 Python open-source repositories. The instance
+distribution is heavily skewed: sympy (77 instances, 25.7\%), Django (114
+instances, 38.0\%), and scikit-learn (23 instances, 7.7\%) account for
+71.3\% of the benchmark. This distribution is consequential for
+interpretation, as we show in Section~\ref{sec:results:per_repo}.
+
+Each instance provides:
+\begin{enumerate}
+  \item A GitHub issue description (\texttt{problem\_statement}).
+  \item A base commit hash identifying the pre-fix repository state.
+  \item Optional structured hints (\texttt{hints\_text}).
+  \item A gold patch (used only for our patch generation signal).
+\end{enumerate}
+
+\noindent We do \emph{not} execute the SWE-bench Docker evaluation harness
+to assess test-suite resolution. Our evaluation metric is \textbf{patch
+generation}: whether a non-empty \texttt{git diff} is produced against the
+base commit after running the system on the instance.
+
+\subsection{Conditions}
+\label{sec:exp:conditions}
+
+We evaluate two conditions in a fully controlled within-study design:
+
+\paragraph{Hierarchical (H).}
+The three-level hierarchical system described in Section~\ref{sec:arch},
+with the four-phase verification pipeline, three Domain Managers, and six
+Worker Agents. Per-instance timeout: 600 seconds.
+
+\paragraph{Baseline (B).}
+A single \texttt{baseline\_patcher} agent with tools
+$\{\texttt{str\_replace}, \texttt{view\_file}, \texttt{shell\_exec}\}$,
+maximum 8 tool iterations, temperature 0.1, and a maximum context history
+of 25,000 characters. The baseline receives the same issue text plus a
+pre-loaded content block of any \texttt{.py} files mentioned by filename in
+the issue description (up to 16,000 characters total, 8,000 chars per file,
+with line numbers prepended). This content pre-loading gives the baseline
+the same file context injection that our hierarchical system's
+\texttt{patch\_writer} receives, making the comparison more conservative
+(i.e., favorable to the baseline).
+
+Between runs, the repository is reset via \texttt{git reset --hard HEAD}
+to ensure Condition H and Condition B operate on identical starting states.
+
+\subsection{Evaluation Metric}
+\label{sec:exp:metric}
+
+The primary metric is the \textbf{patch generation rate} $\rho$:
+\begin{equation}
+  \rho \;=\; \frac{|\{i : \texttt{git\_diff}(i) \neq \varnothing\}|}{N},
+  \quad N = 300.
+\end{equation}
+
+Secondary metrics collected per instance:
+\begin{itemize}
+  \item \textbf{Wall time} $\tau_i$ (seconds): time from first API call to
+    final patch extraction.
+  \item \textbf{Total tokens} $T_i$: sum of prompt and completion tokens
+    across all LLM calls in the pipeline for instance $i$.
+  \item \textbf{Token generation speed} $v_i = T_i / \tau_i$ (tokens/s).
+  \item \textbf{Subtask count} $s_i$: total number of worker agent
+    invocations across all Domain Managers for instance $i$.
+\end{itemize}
+
+\noindent Statistical significance is assessed using \textbf{McNemar's
+paired test with continuity correction}~\cite{mcnemar1947}, appropriate for
+paired binary outcomes where the same 300 instances are evaluated under
+both conditions. The test statistic is:
+\begin{equation}
+  \chi^2 \;=\; \frac{(|b - c| - 1)^2}{b + c},
+\end{equation}
+where $b$ = instances where only H produced a patch (hierarchical-only
+wins), $c$ = instances where only B produced a patch (baseline-only wins).
+
+\subsection{Hyperparameter Transparency}
+\label{sec:exp:hyperparams}
+
+All hyperparameters are fixed before running the 300-instance evaluation;
+no post-hoc tuning is performed. Key values:
+
+\begin{center}
+\small
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Patch retry budget ($k_{\max}$) & 2 \\
+Baseline max tool iterations    & 8 \\
+\texttt{patch\_writer} max tool iterations & 6 \\
+Per-instance timeout            & 600\,s \\
+vLLM GPU memory utilization     & 50\% \\
+Context window (\texttt{max\_model\_len}) & 16,384 tokens \\
+File pre-load limit (baseline)  & 16,000 chars \\
+File pre-load limit (\texttt{patch\_writer}) & 25,000 chars \\
+Random seed (run order)         & \texttt{random.seed(42)} \\
+\bottomrule
+\end{tabular}
+\end{center}

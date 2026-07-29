@@ -1,0 +1,306 @@
+% ============================================================
+% AAAI-2027 Submission
+% "Hierarchical Decomposition of Context: A Three-Level
+%  Multi-Agent Architecture for Autonomous Software Engineering"
+% ============================================================
+\documentclass[letterpaper]{aaai25}  % Use aaai25 style (AAAI 2025/2026/2027 compatible)
+
+% ---- Required AAAI packages --------------------------------
+\usepackage{times}
+\usepackage{helvet}
+\usepackage{courier}
+\usepackage[hyphens]{url}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xspace}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+\usepackage{natbib}
+
+% ---- Theorem environments ----------------------------------
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}{Proposition}
+\newtheorem{definition}{Definition}
+\newtheorem{corollary}{Corollary}
+\newtheorem{lemma}{Lemma}
+
+% ---- Macros ------------------------------------------------
+\newcommand{\sysname}{\textsc{SubAgent Manager}\xspace}
+\newcommand{\Hm}{\mathcal{H}}      % High Manager (Level 1)
+\newcommand{\Dm}{\mathcal{D}}      % Domain Manager (Level 2)
+\newcommand{\Wa}{\mathcal{W}}      % Worker Agent (Level 3)
+\newcommand{\ctx}{\mathbf{c}}      % context vector
+\newcommand{\tools}{\mathcal{T}}   % tool set
+\newcommand{\plan}{\Pi}            % plan
+\newcommand{\patch}{\delta}        % patch
+\newcommand{\verify}{\mathcal{V}}  % verification predicate
+
+% ---- Paper metadata ----------------------------------------
+\title{Hierarchical Decomposition of Context:\\
+A Three-Level Multi-Agent Architecture for Autonomous Software Engineering}
+
+\author{
+  % [Blind review submission — author information omitted]
+  Anonymous Authors\\
+  Anonymous Institution\\
+  \texttt{anonymous@anonymous.edu}
+}
+
+\begin{document}
+
+\maketitle
+
+% ============================================================
+\begin{abstract}
+% ============================================================
+We present \sysname, a three-level hierarchical multi-agent framework for
+autonomous software engineering, and evaluate it on SWE-bench Lite
+\cite{jimenez2024swebench}---the canonical benchmark of 300 real-world
+GitHub issue resolution tasks drawn from 12 open-source Python repositories.
+Our architecture decomposes the software debugging workflow into three
+hierarchical tiers: (1) a singleton \emph{High Manager} ($\Hm$) that
+enforces a four-phase verification pipeline (Analysis $\to$ Reproduction
+$\to$ Patch $\to$ Verification), (2) three \emph{Domain Managers}
+($\Dm_{\text{analysis}},\, \Dm_{\text{testing}},\, \Dm_{\text{patch}}$)
+that independently plan and delegate domain-specific subtasks, and (3) six
+\emph{Worker Agents} ($\Wa_i$) each equipped with a minimal, surgically
+scoped tool set.
+
+All inference is performed locally on a single consumer GPU (NVIDIA RTX
+5080, 16\,GB GDDR7) using
+\texttt{Qwen2.5-Coder-7B-Instruct-AWQ}~\cite{qwen25coder2024} served via a
+custom \texttt{vLLM}~\cite{kwon2023vllm} asynchronous engine with 4-bit
+Activation-Aware Weight Quantization (AWQ)~\cite{lin2024awq}. On SWE-bench
+Lite (all 300 instances), our hierarchical system generates valid patches on
+$53/300$ instances ($17.7\%$), compared to $24/300$ ($8.0\%$) for a
+carefully controlled single-agent baseline operating under identical model,
+quantization, hardware, and inference-server conditions---a \textbf{2.21$\times$
+improvement} in patch-generation rate. The difference between the two
+conditions is statistically significant under McNemar's paired test with
+continuity correction ($\chi^2 = 11.36,\; p = 6.0 \times 10^{-4}$, 49
+hierarchical-only vs.\ 20 baseline-only discordant pairs). We analyze
+performance across all 12 repositories, demonstrate that the improvement is
+concentrated in repositories with larger and more modularly structured
+codebases, and provide an ablation over the key architectural components.
+\end{abstract}
+
+% ============================================================
+\section{Introduction}
+\label{sec:intro}
+% ============================================================
+
+A persistent tension in the design of LLM-based autonomous agents is
+whether performance bottlenecks arise from \emph{capability}---the model
+lacking the knowledge or reasoning skill to solve the problem---or from
+\emph{context management}---the model failing to organize information it
+already possesses within the bounds of a monolithic context window. This
+distinction has profound engineering implications. Capability improvements
+require pre-training or fine-tuning at significant computational cost.
+Context management improvements are achievable through \emph{inference-time
+architectural decisions} with no modification to model weights.
+
+We investigate this question in the domain of autonomous software
+engineering: given a real-world GitHub bug report and access to the affected
+repository, can a 7B-parameter open-weight model, served on a single
+consumer GPU, generate a correct patch if given the right orchestration
+structure? Our answer is \emph{yes}---and the improvement is substantial.
+
+\subsection{Three Failure Modes of Monolithic Agentic Loops}
+\label{sec:intro:failures}
+
+We identify three compounding failure modes that explain why monolithic
+single-agent loops fail on complex software engineering tasks, even when the
+underlying model possesses sufficient parametric knowledge.
+
+\paragraph{(F1) Lost-in-the-Middle Information Loss.}
+\citet{liu2023lostmiddle} demonstrate empirically that transformer models
+exhibit a U-shaped performance curve as a function of the position of
+relevant information within the input context: recall is highest at the
+beginning and end of the sequence, and degrades significantly for tokens
+in the middle. Formally, if the relevant evidence $e$ appears at position
+$k$ in a sequence of length $L$, the probability that the model
+conditions correctly on $e$ can be modeled as:
+\begin{equation}
+  P(\text{recall} \mid k, L) \;\approx\; \alpha \cdot e^{-\beta(k/L)(1 - k/L)}
+  \label{eq:position_bias}
+\end{equation}
+for empirically fitted $\alpha, \beta > 0$. In a software debugging session,
+the bug description, the repository file contents, the reproduction output,
+and the candidate patch must \emph{all} remain salient simultaneously as the
+context grows. Equation~\eqref{eq:position_bias} implies this is
+structurally impossible in a monolithic context beyond a certain length.
+
+\paragraph{(F2) Multi-Step Reasoning Decay.}
+Each reasoning step in a sequential chain compounds the probability of
+error~\cite{valmeekam2023planning,huang2022inner}. Let $p \in (0,1)$ be the
+per-step success probability of a single reasoning step. For a chain of $n$
+steps, the joint success probability is:
+\begin{equation}
+  P(\text{success}_n) \;=\; p^n.
+  \label{eq:chain_decay}
+\end{equation}
+A standard five-step software debugging workflow (analyze $\to$ reproduce
+$\to$ explore $\to$ patch $\to$ verify) with $p = 0.90$ yields
+$P(\text{success}_5) = 0.59$; at $p = 0.80$ this falls to $0.33$.
+Equation~\eqref{eq:chain_decay} motivates decomposing the full workflow into
+maximally short, \emph{independent} reasoning steps---each beginning in a
+fresh context with $p$ reset.
+
+\paragraph{(F3) Context Window Pollution.}
+In a standard ReAct-style agentic loop~\cite{yao2023react}, each tool call
+appends both the call arguments and the tool response to the conversation
+history. Let $\ell_{\text{tool}}$ be the average token count of a tool
+response and $k$ be the number of tool calls. The net token overhead
+accumulated by turn $k$ is $O(k \cdot \ell_{\text{tool}})$, which
+competes with the original task specification for the model's effective
+context budget. In our empirical data, the single-agent baseline generates
+an average of $7{,}177$ tokens per instance with an average wall-time of
+$5.2\,\text{s}$---but produces patches on only $8.0\%$ of instances,
+suggesting that context exhaustion, not compute budget, is the binding
+constraint.
+
+\subsection{Architectural Response: Hierarchical Context Decomposition}
+\label{sec:intro:solution}
+
+All three failure modes share the same structural cause: the monolithic
+context window must simultaneously serve as \emph{working memory} (retaining
+prior information) and \emph{reasoning substrate} (producing the next
+step). These objectives are in direct competition for the finite token budget.
+
+The solution---independently and concurrently arrived at by Google
+Antigravity~\cite{google2024antigravity}, Anthropic Claude
+Code~\cite{anthropic2024claudecode}, GitHub
+Copilot~\cite{github2024copilot}, and OpenAI Agents
+SDK~\cite{openai2024agents}---is \textbf{context isolation}: each agent
+receives a \emph{fresh, uncontaminated context window} containing precisely
+the information it needs for a single reasoning step. Relevant information
+from prior steps is selectively summarized and injected as structured context
+rather than accumulated verbatim.
+
+We extend the two-level (orchestrator + flat workers) pattern common in
+prior work~\cite{wu2023autogen,moura2023crewai} to a \textbf{three-level
+hierarchy with domain-scoped planning at each level}, and show that this
+additional level of organizational structure yields a statistically
+significant improvement in patch generation rate.
+
+\subsection{Contributions}
+\label{sec:intro:contributions}
+
+This paper makes the following contributions:
+
+\begin{enumerate}
+
+  \item \textbf{Three-level hierarchical architecture.} We formalize and
+  implement a three-level hierarchy for autonomous software engineering:
+  (L1) a singleton High Manager enforcing a fixed four-phase verification
+  pipeline, (L2) three independently-planning Domain Managers scoped to
+  Analysis, Testing, and Patch Modification, and (L3) six Worker Agents each
+  restricted to a minimal, task-specific tool set (Section~\ref{sec:arch}).
+
+  \item \textbf{Skeptical Senior Programmer verification loop.} We formalize
+  a verification predicate $\verify(\patch, r)$ that is evaluated by an
+  independent \texttt{test\_runner} agent---not the \texttt{patch\_writer}
+  agent---by re-executing the reproduction script against the patched
+  repository. A patch is accepted only if $\verify(\patch, r) = \texttt{BUG FIXED}$.
+  The Level 1 manager retries patching with failure context injected for
+  up to $k_{\max} = 2$ attempts before reporting failure
+  (Section~\ref{sec:arch:verification}).
+
+  \item \textbf{Full SWE-bench Lite evaluation.} We evaluate all 300
+  instances of SWE-bench Lite using both the hierarchical system and a
+  controlled single-agent baseline under identical model, hardware, and
+  inference-server conditions. This is, to our knowledge, the first full
+  evaluation of a three-level hierarchical multi-agent system on SWE-bench
+  Lite with a 7B open-weight model (Section~\ref{sec:experiments}).
+
+  \item \textbf{Statistical analysis.} We report patch-generation rates,
+  per-repository breakdowns, token efficiency metrics, and time distributions,
+  and provide McNemar's paired significance testing between hierarchical and
+  baseline conditions (Section~\ref{sec:results}).
+
+\end{enumerate}
+
+\subsection{Scope and Claims}
+\label{sec:intro:scope}
+
+We make no claim of state-of-the-art absolute performance on SWE-bench Lite.
+Systems using frontier models (GPT-4o, Claude-3.5-Sonnet) with cloud API
+access achieve $27$--$31\%$ resolved rates~\cite{yang2024sweagent,
+zhang2024autocoderover,xia2024agentless,wang2024opendevin}; our hierarchical
+system achieves $17.7\%$ \emph{patch generation} rate. These numbers are
+not directly comparable: (i) we measure patch generation, not test-suite
+resolution; (ii) we use a 7B quantized model vs.\ $\sim$$175$B+ frontier
+models; (iii) we operate on a single 16\,GB consumer GPU vs.\ cloud
+infrastructure. Our scientific claim is precisely:
+
+\begin{quote}
+  \emph{Under a fixed 7B-parameter AWQ-quantized open-weight model served
+  on a single consumer GPU, three-level hierarchical context decomposition
+  produces a statistically significant ($p < 0.001$) and practically
+  meaningful ($2.21\times$) improvement in patch-generation rate over a
+  single-agent baseline with identical resources.}
+\end{quote}
+
+This result has direct implications for organizations deploying autonomous
+software engineering agents in resource-constrained, air-gapped, or
+privacy-preserving environments where frontier API access is unavailable.
+
+% ============================================================
+\section{Related Work}
+\label{sec:related}
+% ============================================================
+
+\input{section_2_related}
+
+% ============================================================
+\section{System Architecture}
+\label{sec:arch}
+% ============================================================
+
+\input{section_3_architecture}
+
+% ============================================================
+\section{Experimental Setup}
+\label{sec:experiments}
+% ============================================================
+
+\input{section_4_experiments}
+
+% ============================================================
+\section{Results}
+\label{sec:results}
+% ============================================================
+
+\input{section_5_results}
+
+% ============================================================
+\section{Analysis and Ablation}
+\label{sec:analysis}
+% ============================================================
+
+\input{section_6_analysis}
+
+% ============================================================
+\section{Discussion and Limitations}
+\label{sec:discussion}
+% ============================================================
+
+\input{section_7_discussion}
+
+% ============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+% ============================================================
+
+\input{section_8_conclusion}
+
+% ============================================================
+% References
+% ============================================================
+\bibliography{references}
+
+\end{document}

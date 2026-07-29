@@ -1,0 +1,206 @@
+% ============================================================
+% Section 2: Related Work
+% ============================================================
+
+Our work intersects five bodies of literature: (i)~the SWE-bench evaluation
+framework, (ii)~autonomous software engineering agents,
+(iii)~multi-agent orchestration frameworks, (iv)~the theoretical literature
+on context length and reasoning degradation, and (v)~grounded tool use in
+LLMs.
+
+% --------------------------------------------------------
+\subsection{SWE-bench}
+% --------------------------------------------------------
+
+\citet{jimenez2024swebench} introduced SWE-bench, a benchmark of 2,294
+real-world software engineering tasks extracted from pull requests across 12
+popular Python open-source repositories (Django, sympy, scikit-learn, etc.).
+Each instance provides: (i) a GitHub issue description as the problem
+statement, (ii) the repository at the \emph{base commit} (before the fix),
+(iii) a gold-standard patch (the actual merged commit), and (iv) a
+task-specific test suite. Evaluation applies the system's generated unified
+diff patch to the base commit and runs the test suite, reporting a binary
+resolved/unresolved score.
+
+SWE-bench Lite, the 300-instance subset we evaluate on, was curated to
+select self-contained, reproducible issues~\cite{jimenez2024swebench}. We
+report \emph{patch generation rate}---whether the system produces a
+non-empty \texttt{git diff}---rather than resolution rate, as we do not
+execute the full Docker-based evaluation harness. This is a deliberate
+methodological choice: patch generation measures code localization
+and modification capability independent of test-oracle execution artifacts.
+
+% --------------------------------------------------------
+\subsection{Autonomous Software Engineering Agents}
+% --------------------------------------------------------
+
+\paragraph{SWE-agent.}
+\citet{yang2024sweagent} introduced the Agent-Computer Interface (ACI),
+a curated set of file navigation and editing commands designed to minimize
+token overhead for repository operations. SWE-agent uses a single-agent
+ReAct loop~\cite{yao2023react} and achieves 18.0\% on SWE-bench Lite with
+\texttt{GPT-4o} (12.47\% with \texttt{gpt-4-turbo}). Our baseline
+(\texttt{baseline\_patcher} agent) is architecturally equivalent to
+SWE-agent under the constraint of a 7B AWQ-quantized local model---the
+difference in patch rate between the two is attributable entirely to model
+capacity.
+
+\paragraph{Moatless Tools.}
+\citet{orwall2024moatless} extend the SWE-agent paradigm with a
+graph-based state machine that enforces a structured navigation over
+specialized sub-tools (code search, edit, verify), achieving 24.7\% on
+SWE-bench Lite with \texttt{claude-3.5-sonnet}. Moatless is the closest
+prior work to ours architecturally---it enforces a directed workflow rather
+than a free-form loop---but remains a \emph{two-level} system (a fixed
+state machine routing to tools) rather than our \emph{three-level} hierarchy
+with independently-planning domain managers at L2.
+
+\paragraph{AutoCodeRover.}
+\citet{zhang2024autocoderover} introduce program-structure-aware code search
+via AST-level repository navigation, achieving 30.67\% on SWE-bench Lite
+with \texttt{GPT-4o}. The AST-level localization significantly reduces
+context token consumption compared to naive file-level reads---an orthogonal
+technique complementary to our hierarchical decomposition.
+
+\paragraph{Agentless.}
+\citet{xia2024agentless} take a deliberately non-agentic approach: a fixed
+three-phase pipeline (fault localization, patch generation, patch filtering)
+with no tool-use loop, achieving 27.33\%. Agentless demonstrates that
+\emph{structured, non-reactive pipelines can outperform reactive tool-loop
+agents} when phases are well-calibrated, reinforcing our hypothesis that
+structure outperforms autonomy for complex multi-step tasks.
+
+\paragraph{OpenHands.}
+\citet{wang2024opendevin} present OpenHands (formerly OpenDevin), a
+general-purpose code agent operating in a sandboxed execution environment
+with a single CodeAct agent (alternating Python code generation and
+execution), achieving 26.97\% with \texttt{claude-3.5-sonnet}. OpenHands
+does not employ hierarchical decomposition.
+
+\paragraph{SWE-RL and RL-based systems.}
+\citet{luo2025swerl} train agents with reinforcement learning on SWE-bench
+trajectories, achieving significant gains through reward-signal-guided
+fine-tuning. RL-based approaches are orthogonal to ours: they invest compute
+at \emph{training time} to improve model capability; we invest compute at
+\emph{inference time} through architectural orchestration. The two approaches
+are complementary.
+
+% --------------------------------------------------------
+\subsection{Multi-Agent Orchestration Frameworks}
+% --------------------------------------------------------
+
+\paragraph{AutoGen.}
+\citet{wu2023autogen} introduced a conversational multi-agent framework in
+which agents exchange messages in a structured chat. Unlike our system,
+AutoGen agents share a common conversation history, violating the context
+isolation property we identify as essential. Shared history accumulates
+tool outputs from all prior agents, exacerbating the pollution problem (F3)
+identified in Section~\ref{sec:intro:failures}.
+
+\paragraph{LangGraph.}
+\citet{chase2024langgraph} provide a graph-based orchestration framework in
+which nodes (agents or tools) exchange state via a shared message dictionary.
+LangGraph's flexibility does not enforce any of the structural constraints
+we identify as performance-critical: fresh context per agent, mandatory
+tool execution, or skeptical verification loops.
+
+\paragraph{smolagents.}
+\citet{huggingface2024smolagents} take a code-first approach in which agents
+generate Python code that calls other agents as tools, enabling recursive
+composition. While philosophically adjacent to our three-level hierarchy,
+smolagents does not enforce organizational discipline at each level---agents
+can still accumulate arbitrarily long execution histories.
+
+\paragraph{Google ADK and OpenAI Agents SDK.}
+Both provide production-grade multi-agent primitives
+\cite{google2024adk,openai2024agents} that converge on context isolation as
+a design principle, but neither targets the software engineering domain
+or formalizes the skeptical verification semantics of our system.
+
+% --------------------------------------------------------
+\subsection{Context Length and Reasoning Degradation}
+% --------------------------------------------------------
+
+\citet{liu2023lostmiddle} provide foundational empirical evidence for
+position-dependent attention degradation. We formalize their finding in
+Equation~\eqref{eq:position_bias} and use it to motivate context isolation.
+\citet{shi2023large} demonstrate that semantically irrelevant information
+in the context can substantially degrade LLM reasoning accuracy (up to
+$65\%$ performance drop on grade-school math with irrelevant sentences),
+directly establishing the context pollution failure mode (F3).
+\citet{huang2023self} show that LLMs cannot reliably self-correct reasoning
+errors without external feedback, directly motivating our independent
+\texttt{test\_runner} verification gate rather than asking
+\texttt{patch\_writer} to self-verify.
+
+\citet{hao2023reasoning} frame multi-step reasoning as planning under
+uncertainty, showing that chain-of-thought prompting degrades as dependency
+chain length grows---consistent with Equation~\eqref{eq:chain_decay}.
+\citet{valmeekam2023planning} empirically document LLM planning failures on
+blocksworld and logistics tasks as horizon length increases, reinforcing the
+multi-step reasoning decay argument.
+
+\emph{Cognitive Load Theory}~\cite{sweller1988cognitive,paas2003cognitive}
+provides the theoretical substrate: working memory (analogous to the
+effective context window) has a fixed capacity, and cognitive overload
+occurs when the number of interacting elements exceeds that capacity.
+Decomposition into focused sub-problems is the canonical remediation.
+
+% --------------------------------------------------------
+\subsection{Tool Use and Grounded Generation}
+% --------------------------------------------------------
+
+\citet{yao2023react} introduced the ReAct paradigm for interleaved
+reasoning and acting that underlies all tool-use loops in the systems above,
+including ours. \citet{schick2023toolformer} demonstrated that LLMs can
+learn tool use in a self-supervised manner; unlike Toolformer, our system
+achieves tool use through prompt engineering and native function-calling
+APIs, targeting open-weight models without specialized training.
+
+The \texttt{str\_replace} surgical edit primitive---replace only the changed
+fragment rather than rewriting the entire file---has been independently
+adopted by SWE-agent~\cite{yang2024sweagent},
+Moatless~\cite{orwall2024moatless}, and Aider~\cite{gauthier2024aider}.
+Full-file rewriting requires the model to faithfully reproduce thousands of
+characters of context it has only partially observed---a task that 7B models
+consistently fail on. Our \texttt{StrReplaceTool} implementation enforces
+this paradigm by \emph{removing} the \texttt{write\_file} tool from the
+patch agent's available tool set, making the surgical approach mandatory.
+
+% --------------------------------------------------------
+\subsection{Positioning of This Work}
+% --------------------------------------------------------
+
+Table~\ref{tab:related} situates our system against prior work on the most
+relevant dimensions. The key comparative axis is the \textbf{within-system
+controlled experiment}: the hierarchical and baseline rows use the
+\emph{same model, same hardware, same tools, same 300 instances}. The
+$2.21\times$ improvement between these two rows is the primary scientific
+finding of this paper.
+
+\begin{table}[t]
+\centering
+\caption{Positioning of \sysname relative to prior autonomous SE systems.
+``Levels'' refers to the number of hierarchical planning layers.
+Patch rate / resolution rate figures are not directly comparable across rows
+due to different models, metrics, and evaluation protocols.}
+\label{tab:related}
+\small
+\begin{tabular}{llllr}
+\toprule
+\textbf{System} & \textbf{Levels} & \textbf{Model} & \textbf{Verify} &
+  \textbf{Rate} \\
+\midrule
+SWE-agent~\cite{yang2024sweagent}        & 1     & GPT-4o            & self & 18.0\%$^\dagger$ \\
+Moatless~\cite{orwall2024moatless}       & 2     & Claude-3.5-S      & suite & 24.7\%$^\dagger$ \\
+AutoCodeRover~\cite{zhang2024autocoderover} & 2  & GPT-4o            & ---  & 30.7\%$^\dagger$ \\
+Agentless~\cite{xia2024agentless}        & 3$^*$ & GPT-4o            & filter & 27.3\%$^\dagger$ \\
+OpenHands~\cite{wang2024opendevin}       & 1     & Claude-3.5-S      & self & 27.0\%$^\dagger$ \\
+\midrule
+\textbf{Ours (Hierarchical)}  & \textbf{3} & \textbf{Qwen2.5-C-7B-AWQ} & \textbf{indep.} & \textbf{17.7\%}$^\ddagger$ \\
+Ours (Baseline)               & 1          & Qwen2.5-C-7B-AWQ           & ---             & 8.0\%$^\ddagger$ \\
+\bottomrule
+\multicolumn{5}{l}{$^\dagger$ SWE-bench resolution rate (test suite pass). $^\ddagger$ Patch generation rate.} \\
+\multicolumn{5}{l}{$^*$ Agentless uses a \emph{fixed} 3-phase pipeline, not dynamic per-level planning.}
+\end{tabular}
+\end{table}

@@ -1,0 +1,83 @@
+% ============================================================
+% Section 7: Discussion and Limitations
+% ============================================================
+
+\subsection{Implications for Resource-Constrained Deployment}
+\label{sec:disc:deployment}
+
+The primary practical implication of our results is that \emph{inference-time
+orchestration architecture is a first-class engineering lever for improving
+the capability of resource-constrained LLM deployments}. An organization
+operating on a single 16\,GB GPU with a 7B model---a configuration costing
+approximately \$1{,}000--\$2{,}000 in hardware---can achieve 2.21$\times$
+higher code patch generation rates by adopting a hierarchical orchestration
+structure rather than a monolithic single-agent loop, without any model
+fine-tuning or additional hardware.
+
+This has immediate implications for privacy-sensitive deployments (where
+sending code to cloud APIs is prohibited), air-gapped environments (where
+internet connectivity is absent), and cost-sensitive development workflows
+(where per-token cloud API costs are prohibitive for high-volume agent use).
+
+\subsection{Relationship to Scaling Laws}
+\label{sec:disc:scaling}
+
+Our result can be interpreted through the lens of the inference-time scaling
+hypothesis: that additional compute at inference time can substitute for
+additional parameters at training time~\cite{snell2024scaling,
+brown2024large}. Hierarchical orchestration increases inference-time compute
+in two ways: (1) by running multiple LLM calls per instance (one per agent
+invocation), and (2) by generating significantly more tokens per instance
+(7.7$\times$ more than the baseline). This additional compute is not
+wasted---it is structural: it goes into targeted exploration (code localization),
+verification (test re-execution), and plan synthesis (Domain Manager
+summaries). Whether this compute investment is efficient relative to simply
+using a larger model (e.g., a 70B model with equivalent VRAM via multi-GPU
+setup) is an important open question.
+
+\subsection{Limitations}
+\label{sec:disc:limitations}
+
+\paragraph{Metric.}
+We report patch generation rate, not test-suite resolution rate. A system
+that generates a syntactically valid non-empty patch that fails all tests
+counts as a ``win'' under our metric. The gap between patch generation and
+resolution is well-documented: \citet{yang2024sweagent} report that
+SWE-agent generates patches on a substantially higher fraction of instances
+than it resolves. Our resolution rate is thus likely lower than our $17.7\%$
+patch generation figure. Future work should integrate the SWE-bench Docker
+evaluation harness to report resolution rates.
+
+\paragraph{Sympy exclusion.}
+The 77 sympy instances constitute a systematic failure due to repository
+setup, not model or orchestration capability. If sympy instances could be
+properly evaluated, the headline numbers would shift. Our non-sympy rates
+(H: 23.8\%, B: 10.8\%) may be a more representative characterization of
+the system's capability on solvable instances.
+
+\paragraph{Single model, single hardware configuration.}
+All results use \texttt{Qwen2.5-Coder-7B-Instruct-AWQ} on an RTX 5080.
+Generalizability to other model families (Code Llama, DeepSeek Coder,
+StarCoder), quantization schemes (GPTQ, GGUF), and hardware configurations
+(A100, H100, multi-GPU) is not established.
+
+\paragraph{No ablation over hierarchy depth.}
+We compare three-level (H) vs.\ one-level (B) directly, without evaluating
+a two-level intermediate (orchestrator + flat workers, no domain managers).
+Establishing the marginal contribution of the L2 Domain Manager layer over
+a flat two-level hierarchy would require an additional experimental arm.
+
+\paragraph{Determinism and variance.}
+Each instance is run exactly once in each condition. Due to LLM sampling
+non-determinism (temperature $> 0$ for most agents), there is instance-level
+variance in outcomes. We do not report confidence intervals over multiple
+runs due to the computational cost of re-running the full 300-instance
+evaluation.
+
+\paragraph{Wall-clock overhead.}
+The hierarchical system requires an average of 94.8\,s per instance versus
+5.2\,s for the baseline---an 18.2$\times$ wall-time overhead. For
+interactive use cases where latency matters (e.g., IDE code completion),
+this overhead is prohibitive. The hierarchical system is appropriate for
+asynchronous batch workflows (e.g., nightly CI/CD bug triage, offline code
+review) where throughput matters more than latency.
