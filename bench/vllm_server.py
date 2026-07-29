@@ -42,8 +42,18 @@ sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-Coder-7B-Instruct-AWQ")
-GPU_UTIL = float(os.getenv("GPU_UTIL", "0.50"))
+GPU_UTIL = float(os.getenv("GPU_UTIL", "0.65"))  # Raised from 0.50: needed for KV cache of 4 concurrent seqs
 MAX_MODEL_LEN = int(os.getenv("MAX_MODEL_LEN", "16384"))
+# SMOKE TEST NOTE (2026-07-29): max_num_seqs was 1 (serial) during the original 300-instance run.
+# Increased to 4 to give asyncio.gather() real GPU parallelism.
+# Smoke-tested at MAX_NUM_SEQS=4 vs MAX_NUM_SEQS=1 on 5 instances before full ablation;
+# results are preserved in bench/results/smoke_concurrency_*.jsonl.
+# WHY KEPT: With max_num_seqs=1, ParallelStrategy's asyncio.gather() is a no-op — all
+# agent coroutines are serialized by the vLLM engine. Setting to 4 gives the AdaptiveStrategy
+# real throughput benefit when independent workers (e.g., issue_analyzer + code_explorer)
+# can overlap on the GPU.
+# RISK: Higher peak VRAM. If OOM occurs, revert to MAX_NUM_SEQS=2 and GPU_UTIL=0.60.
+MAX_NUM_SEQS = int(os.getenv("MAX_NUM_SEQS", "4"))
 
 app = FastAPI(title="vLLM FastServer")
 
@@ -59,7 +69,7 @@ async def startup_event():
         model=MODEL_NAME,
         max_model_len=MAX_MODEL_LEN,
         gpu_memory_utilization=GPU_UTIL,
-        max_num_seqs=1,
+        max_num_seqs=MAX_NUM_SEQS,  # Was 1 (serial); now 4 for real asyncio.gather() parallelism
         enforce_eager=True,
         trust_remote_code=True,
         offload_backend="prefetch",
