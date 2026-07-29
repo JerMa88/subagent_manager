@@ -44,6 +44,27 @@ class DomainManagerConfig:
     strategy: str = "adaptive"
     system_prompt: str | None = None
 
+    bypass_planning: bool = False
+    """
+    When True AND the domain has exactly 1 worker, skip the SubAgentManager
+    planning + synthesis calls and invoke the worker directly.
+
+    WHY THIS EXISTS: Each DomainManager wraps a full SubAgentManager, which
+    always runs a planning LLM call (_plan) and a synthesis LLM call
+    (_synthesize) even when there is only one possible worker to delegate to.
+    For PatchDomainManager (1 worker: patch_writer), this wastes ~2000 tokens
+    and ~5–10s of wall time producing a trivial plan ["delegate to patch_writer"].
+
+    SMOKE TEST REQUIRED before enabling in full ablation: confirm that
+    bypassing the orchestrator prompt does not degrade patch quality.
+    Results documented in bench/results/smoke_bypass_*.jsonl.
+    Default is False (disabled) — must be explicitly opted into per-domain.
+
+    WHY NOT ALWAYS ON: Multi-worker domains (analysis: 2 workers, testing: 3
+    workers) NEED planning to dynamically order their workers. Only enable
+    bypass_planning for domains with a single, fixed-purpose worker.
+    """
+
 
 @dataclass
 class DomainResult:
@@ -94,6 +115,9 @@ class DomainManager:
     ) -> DomainResult:
         """
         Execute domain task via Level 3 workers.
+
+        If bypass_planning=True and only 1 worker exists, skips the
+        SubAgentManager plan+synthesize overhead and calls the worker directly.
         """
         t0 = time.monotonic()
         logger.log(
@@ -101,6 +125,41 @@ class DomainManager:
             f"[DOMAIN:{self.config.name}] Starting domain goal: {truncate_for_log(domain_goal, 150)}",
         )
 
+        # ── Fast path: single-worker domain with planning bypass ─────────────────
+        # Bypasses the SubAgentManager orchestrator prompt + synthesis call.
+        # Only active when bypass_planning=True and exactly 1 worker is configured.
+        # See DomainManagerConfig.bypass_planning docstring for rationale.
+        if self.config.bypass_planning and len(self.config.worker_agents) == 1:
+            worker_config = self.config.worker_agents[0]
+            from subagent_manager.subagent import SubAgent
+            worker = SubAgent(config=worker_config, llm_client=self.manager.llm_client)
+            logger.log(
+                VERBOSE1,
+                f"[DOMAIN:{self.config.name}] bypass_planning=True: "
+                f"invoking '{worker_config.name}' directly (skipping plan+synthesize)",
+            )
+            worker_result = await worker.execute(
+                task=domain_goal,
+                context=context,
+                event_bus=event_bus,
+            )
+            elapsed = time.monotonic() - t0
+            logger.log(
+                VERBOSE1,
+                f"[DOMAIN:{self.config.name}] bypass complete in {elapsed:.1f}s "
+                f"tokens={worker_result.tokens_used}",
+            )
+            return DomainResult(
+                domain_name=self.config.name,
+                summary=worker_result.answer,
+                worker_results=[worker_result],
+                success=worker_result.success,
+                total_tokens=worker_result.tokens_used,
+                total_tool_calls=worker_result.tool_calls_made,
+                elapsed_seconds=elapsed,
+            )
+
+        # ── Normal path: full SubAgentManager orchestration ───────────────────
         res: ManagerResult = await self.manager.run(
             goal=domain_goal,
             context=context,
