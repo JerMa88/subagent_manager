@@ -217,3 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 bench/repos/
+
+# Benchmarking outputs and temp files
+bench/repos*/
+bench/results/
+litellm_kwargs.json
+test_baseline_raw.patch
