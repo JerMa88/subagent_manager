@@ -86,6 +86,21 @@ class RunResult:
     total_tool_calls: int = 0
     diagnosis: str = ""
 
+    # -- Ablation telemetry (schema_version=2, added for multi-level comparison) --
+    # All fields default to values that reflect the 1-level (flat) harness baseline.
+    # The 3-level hierarchy overrides them via run_hierarchical_instance().
+    # WHY KEPT: Without these, we cannot compare ablation conditions in the JSONL.
+    subtasks_count: int = 0
+    """Worker agents invoked (for 1-level = 1; for 3-level = sum across all domains)."""
+    effective_depth: int = 1
+    """Actual hierarchy depth: 0=one-shot, 1=flat/baseline, 2=orch+workers, 3=full."""
+    retry_count: int = 0
+    """Patch-verify retries (always 0 for baseline; may be >0 for hierarchy)."""
+    domain_trace: list = field(default_factory=list)
+    """Per-domain breakdown list; empty for baseline (no domains)."""
+    schema_version: int = 2
+    """Incremented when new fields are added for downstream compatibility detection."""
+
 
 # ---------------------------------------------------------------------------
 # Repository setup
