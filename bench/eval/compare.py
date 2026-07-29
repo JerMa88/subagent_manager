@@ -195,14 +195,28 @@ async def run_baseline(
 @dataclass
 class ComparisonRow:
     instance_id: str
+    # ── Core outcome fields (unchanged from schema_version=1) ───────────────
     hier_patch: bool = False
     hier_time: float = 0.0
     hier_tokens: int = 0
+    hier_subtasks: int = 0
     hier_error: str = ""
     base_patch: bool = False
     base_time: float = 0.0
     base_tokens: int = 0
+    base_subtasks: int = 0
     base_error: str = ""
+    # ── Ablation telemetry fields (schema_version=2) ───────────────────────
+    # WHY KEPT: Needed for multi-level depth comparison ablation.
+    # hier_effective_depth: always 3 for current runs; will vary in ablation.
+    # hier_retry_count: measures verification loop utilization.
+    # hier_domain_trace: per-phase token/time breakdown for cost attribution.
+    schema_version: int = 2
+    hier_effective_depth: int = 3
+    hier_retry_count: int = 0
+    hier_domain_trace: list = field(default_factory=list)
+    base_effective_depth: int = 1
+    base_retry_count: int = 0
 
 
 def print_table(rows: list[ComparisonRow]) -> None:
@@ -263,9 +277,14 @@ async def compare(
         h_result = await run_instance(inst, model=model, work_dir=work_dir, verbosity=verbosity)
         row.hier_patch = h_result.patch_generated
         row.hier_time = h_result.elapsed_seconds
+        row.hier_tokens = getattr(h_result, "total_tokens", 0)
+        row.hier_subtasks = getattr(h_result, "subtasks_count", 0)
+        row.hier_effective_depth = getattr(h_result, "effective_depth", 3)
+        row.hier_retry_count = getattr(h_result, "retry_count", 0)
+        row.hier_domain_trace = getattr(h_result, "domain_trace", [])
         row.hier_error = h_result.error or ""
         status = "✅ PATCH" if h_result.patch_generated else "❌ NO PATCH"
-        print(f"         {status}  ({h_result.elapsed_seconds:.0f}s)")
+        print(f"         {status}  ({h_result.elapsed_seconds:.0f}s)  depth={row.hier_effective_depth}  retries={row.hier_retry_count}")
 
         # Reset repo for baseline
         import subprocess
@@ -276,6 +295,10 @@ async def compare(
         b_result = await run_baseline(inst, model=model, work_dir=work_dir, verbosity=0)
         row.base_patch = b_result.patch_generated
         row.base_time = b_result.elapsed_seconds
+        row.base_tokens = getattr(b_result, "total_tokens", 0)
+        row.base_subtasks = getattr(b_result, "subtasks_count", 0)
+        row.base_effective_depth = getattr(b_result, "effective_depth", 1)
+        row.base_retry_count = getattr(b_result, "retry_count", 0)
         row.base_error = b_result.error or ""
         status = "✅ PATCH" if b_result.patch_generated else "❌ NO PATCH"
         print(f"         {status}  ({b_result.elapsed_seconds:.0f}s)")
@@ -284,10 +307,33 @@ async def compare(
 
     print_table(rows)
 
-    # Write JSON output
+    # Write JSONL output incrementally (already done per-row during the loop above
+    # via the open(output, 'a') appends; here we overwrite with the complete set
+    # so downstream scripts always see a clean file with no partial entries).
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     with open(output, "w") as f:
-        json.dump([asdict(r) for r in rows], f, indent=2)
+        for r in rows:
+            # Serialize to dict manually so domain_trace (a list field) serializes correctly
+            row_dict = {
+                "instance_id": r.instance_id,
+                "schema_version": r.schema_version,
+                "hier_patch": r.hier_patch,
+                "hier_time": r.hier_time,
+                "hier_tokens": r.hier_tokens,
+                "hier_subtasks": r.hier_subtasks,
+                "hier_effective_depth": r.hier_effective_depth,
+                "hier_retry_count": r.hier_retry_count,
+                "hier_domain_trace": r.hier_domain_trace,
+                "hier_error": r.hier_error,
+                "base_patch": r.base_patch,
+                "base_time": r.base_time,
+                "base_tokens": r.base_tokens,
+                "base_subtasks": r.base_subtasks,
+                "base_effective_depth": r.base_effective_depth,
+                "base_retry_count": r.base_retry_count,
+                "base_error": r.base_error,
+            }
+            f.write(json.dumps(row_dict) + "\n")
     print(f"\nResults saved to {output}")
 
 
