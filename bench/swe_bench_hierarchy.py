@@ -47,6 +47,45 @@ class HierarchicalResult:
     subtasks_count: int = 0
     elapsed_seconds: float = 0.0
 
+    # ── Ablation / telemetry fields (added for multi-level comparison) ──────
+    # These fields are ALWAYS populated even when their values are trivial
+    # (e.g., effective_depth is always 3 in the current 3-level architecture).
+    # They exist so that ablation conditions with different depths produce
+    # structurally identical JSONL rows that can be compared without schema
+    # changes between runs.
+    #
+    # WHY KEPT: Critical for the planned 0/1/2/3/4-level ablation experiment.
+    # Removing them would make past and future runs incomparable.
+
+    schema_version: int = 2
+    """Incremented when new fields are added; lets downstream scripts detect stale rows."""
+
+    effective_depth: int = 3
+    """Actual hierarchy levels traversed (0=one-shot, 1=flat, 2=orchestrator+workers, 3=full)."""
+
+    retry_count: int = 0
+    """How many patch-verify retries occurred (0 = first attempt succeeded or no patch)."""
+
+    domain_trace: list[dict] = field(default_factory=list)
+    """
+    Per-domain breakdown for budget attribution. Each entry:
+      {"domain": str, "phase": int, "tokens": int, "tool_calls": int,
+       "subtasks": int, "time_s": float, "success": bool}
+    Allows isolating the cost of each Level-2 domain manager independently.
+    """
+
+    planning_tokens: int = 0
+    """
+    Tokens spent on Level-2 orchestration overhead (planning + synthesis calls
+    inside each DomainManager's SubAgentManager). Computed as:
+      total_tokens - work_tokens
+    where work_tokens = sum of Level-3 worker agent tokens.
+    Currently approximated as 0 (full split requires per-agent token logging
+    inside manager._plan and manager._synthesize, tracked in Gap-5 of the
+    ablation readiness doc). Reserved field — will be populated once
+    planning-token split is implemented.
+    """
+
 
 class HierarchicalSWEBenchManager:
     """
@@ -154,9 +193,22 @@ class HierarchicalSWEBenchManager:
         logger.log(VERBOSE1, f"[LEVEL1_MANAGER] Issue: {truncate_for_log(problem_statement, 150)}")
 
         domain_results: list[DomainResult] = []
+        domain_trace: list[dict] = []
         total_tokens = 0
         total_tool_calls = 0
         subtasks_count = 0
+
+        def _record_domain(phase: int, res: DomainResult) -> None:
+            """Append a domain result to the trace list."""
+            domain_trace.append({
+                "domain": res.domain_name,
+                "phase": phase,
+                "tokens": res.total_tokens,
+                "tool_calls": res.total_tool_calls,
+                "subtasks": len(res.worker_results),
+                "time_s": round(res.elapsed_seconds, 2),
+                "success": res.success,
+            })
 
         # ------------------------------------------------------------------
         # Phase 1 (Level 2 AnalysisDomainManager): Diagnose bug & explore repo
@@ -168,6 +220,7 @@ class HierarchicalSWEBenchManager:
         )
         res_analysis = await self.analysis_mgr.run_domain(analysis_goal, context=context, event_bus=event_bus)
         domain_results.append(res_analysis)
+        _record_domain(1, res_analysis)
         total_tokens += res_analysis.total_tokens
         total_tool_calls += res_analysis.total_tool_calls
         subtasks_count += len(res_analysis.worker_results)
@@ -183,6 +236,7 @@ class HierarchicalSWEBenchManager:
         )
         res_repro = await self.testing_mgr.run_domain(repro_goal, context=context, event_bus=event_bus)
         domain_results.append(res_repro)
+        _record_domain(2, res_repro)
         total_tokens += res_repro.total_tokens
         total_tool_calls += res_repro.total_tool_calls
         subtasks_count += len(res_repro.worker_results)
@@ -211,6 +265,7 @@ class HierarchicalSWEBenchManager:
 
             res_patch = await self.patch_mgr.run_domain(patch_goal, context=context, event_bus=event_bus)
             domain_results.append(res_patch)
+            _record_domain(3, res_patch)
             total_tokens += res_patch.total_tokens
             total_tool_calls += res_patch.total_tool_calls
             subtasks_count += len(res_patch.worker_results)
@@ -222,6 +277,7 @@ class HierarchicalSWEBenchManager:
             )
             res_verify = await self.testing_mgr.run_domain(verify_goal, context=context, event_bus=event_bus)
             domain_results.append(res_verify)
+            _record_domain(4, res_verify)
             total_tokens += res_verify.total_tokens
             total_tool_calls += res_verify.total_tool_calls
             subtasks_count += len(res_verify.worker_results)
@@ -239,7 +295,14 @@ class HierarchicalSWEBenchManager:
         summary_answer = (
             f"3-Level Hierarchy Completed in {elapsed:.1f}s.\n"
             f"Verified Success: {verified_pass}\n"
+            f"Retries: {retry_count}\n"
             f"Final Verification Output:\n{latest_verification_feedback if not verified_pass else 'BUG FIXED'}"
+        )
+        logger.log(
+            VERBOSE1,
+            f"[LEVEL1_MANAGER] ═════ Pipeline Done ═════  "
+            f"elapsed={elapsed:.1f}s  tokens={total_tokens:,}  "
+            f"retries={retry_count}  subtasks={subtasks_count}  verified={verified_pass}",
         )
 
         return HierarchicalResult(
@@ -250,6 +313,9 @@ class HierarchicalSWEBenchManager:
             total_tool_calls=total_tool_calls,
             subtasks_count=subtasks_count,
             elapsed_seconds=elapsed,
+            effective_depth=3,
+            retry_count=retry_count,
+            domain_trace=domain_trace,
         )
 
 async def run_hierarchical_instance(
@@ -353,5 +419,10 @@ async def run_hierarchical_instance(
         total_tool_calls=res.total_tool_calls,
         subtasks_count=res.subtasks_count,
         diagnosis=res.answer[:500] if res.answer else "",
+        # Ablation telemetry — propagated from HierarchicalResult
+        effective_depth=res.effective_depth,
+        retry_count=res.retry_count,
+        domain_trace=res.domain_trace,
+        schema_version=res.schema_version,
     )
 
