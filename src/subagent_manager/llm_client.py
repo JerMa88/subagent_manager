@@ -164,7 +164,7 @@ class LLMClient:
         # For local/Ollama models (especially thinking models like Gemma 4),
         # the thinking tokens count against max_tokens. Boost the budget
         # so there's room for both thinking and the actual response.
-        if not self._supports_native_tools:
+        if not self._supports_native_tools and not self.api_base:
             kwargs["max_tokens"] = kwargs["max_tokens"] * 4
 
         if self.api_key:

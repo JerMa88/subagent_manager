@@ -134,10 +134,20 @@ def clone_and_checkout(
             ["git", "reset", "--hard", "HEAD"],
             cwd=repo_dir, capture_output=True, check=True,
         )
-        subprocess.run(
-            ["git", "checkout", "-f", base_commit],
-            cwd=repo_dir, capture_output=True, check=True,
-        )
+        try:
+            subprocess.run(
+                ["git", "checkout", "-f", base_commit],
+                cwd=repo_dir, capture_output=True, check=True,
+            )
+        except subprocess.CalledProcessError:
+            subprocess.run(
+                ["git", "fetch", "--all"],
+                cwd=repo_dir, capture_output=True, check=True, timeout=300,
+            )
+            subprocess.run(
+                ["git", "checkout", "-f", base_commit],
+                cwd=repo_dir, capture_output=True, check=True,
+            )
         subprocess.run(
             ["git", "clean", "-fdx"],
             cwd=repo_dir, capture_output=True, check=True,
@@ -152,10 +162,20 @@ def clone_and_checkout(
             capture_output=True, check=True, timeout=300,
         )
         logger.log(VERBOSE1, f"[HARNESS] Checking out {base_commit[:8]}")
-        subprocess.run(
-            ["git", "checkout", "-f", base_commit],
-            cwd=repo_dir, capture_output=True, check=True,
-        )
+        try:
+            subprocess.run(
+                ["git", "checkout", "-f", base_commit],
+                cwd=repo_dir, capture_output=True, check=True,
+            )
+        except subprocess.CalledProcessError:
+            subprocess.run(
+                ["git", "fetch", "--all"],
+                cwd=repo_dir, capture_output=True, check=True, timeout=300,
+            )
+            subprocess.run(
+                ["git", "checkout", "-f", base_commit],
+                cwd=repo_dir, capture_output=True, check=True,
+            )
 
     return repo_dir
 
