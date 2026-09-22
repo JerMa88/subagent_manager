@@ -5,13 +5,14 @@
 # Time: ~15-20 minutes
 # ==============================================================================
 #SBATCH --job-name=smoke_qwen32b
+#SBATCH --account=mhahsler_course_recomm_0001
 #SBATCH --partition=short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
 #SBATCH --mem=120G
-#SBATCH --time=00:30:00
+#SBATCH --time=01:30:00
 #SBATCH --output=bench/slurm/logs/smoke_%j.log
 #SBATCH --error=bench/slurm/logs/smoke_%j.err
 
@@ -21,10 +22,11 @@ echo "==========================================================================
 echo "Starting A100 Smoke Test on $(hostname) at $(date)"
 echo "=============================================================================="
 
-export HF_HOME="${HF_HOME:-/users/jerryma/hf_cache}"
+export HF_HOME="${HF_HOME:-/projects/mhahsler/course_recomm/allocation001/hf_cache}"
+export HF_TOKEN=$(cat /users/jerryma/.hf_token 2>/dev/null || true)
 export MODEL_NAME="Qwen/Qwen2.5-Coder-32B-Instruct"
 export VLLM_PORT=8000
-export VIRTUAL_ENV="/users/jerryma/.venvs/subagent_a100"
+export VIRTUAL_ENV="/projects/mhahsler/course_recomm/allocation001/venvs/subagent_a100"
 source "${VIRTUAL_ENV}/bin/activate"
 
 PROJECT_ROOT="/projects/mhahsler/course_recomm/allocation001/AI_Club/paper/subagent_manager"
@@ -41,7 +43,7 @@ python -m vllm.entrypoints.openai.api_server \
     --host 127.0.0.1 \
     --port "${VLLM_PORT}" \
     --max-model-len 32768 \
-    --gpu-memory-utilization 0.92 \
+    --gpu-memory-utilization 0.90 \
     --max-num-seqs 16 \
     --enable-prefix-caching \
     --enable-chunked-prefill \

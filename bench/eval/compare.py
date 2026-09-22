@@ -90,6 +90,8 @@ async def run_baseline(
     instance: SWEBenchInstance,
     model: str,
     work_dir: str,
+    api_base: str | None = None,
+    api_key: str | None = None,
     verbosity: int = 0,
 ) -> RunResult:
     """
@@ -158,6 +160,8 @@ async def run_baseline(
         subagents=[agent],
         strategy="sequential",
         max_subtasks=1,
+        api_base=api_base,
+        api_key=api_key,
         verbose=verbosity,
     )
 

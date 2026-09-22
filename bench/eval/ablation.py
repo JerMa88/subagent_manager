@@ -391,7 +391,8 @@ async def run_ablation(
                 # Level 1 and 2 use different call signatures
                 if level == 1:
                     result = await run_baseline(
-                        inst, model=model, work_dir=work_dir, verbosity=verbosity
+                        inst, model=model, work_dir=work_dir,
+                        api_base=api_base, api_key=api_key, verbosity=verbosity,
                     )
                 elif level in (0, 2, 4):
                     result = await runner(

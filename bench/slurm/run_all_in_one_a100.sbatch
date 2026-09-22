@@ -4,6 +4,7 @@
 # Model: Qwen/Qwen2.5-Coder-32B-Instruct (unquantized BF16)
 # ==============================================================================
 #SBATCH --job-name=eval_qwen32b
+#SBATCH --account=mhahsler_course_recomm_0001
 #SBATCH --partition=short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -21,10 +22,10 @@ echo "Starting A100 All-In-One Evaluation on $(hostname) at $(date)"
 echo "=============================================================================="
 
 # ── 1. Setup Environment ─────────────────────────────────────────────────────
-export HF_HOME="${HF_HOME:-/users/jerryma/hf_cache}"
+export HF_HOME="${HF_HOME:-/projects/mhahsler/course_recomm/allocation001/hf_cache}"
 export MODEL_NAME="Qwen/Qwen2.5-Coder-32B-Instruct"
 export VLLM_PORT=8000
-export VIRTUAL_ENV="/users/jerryma/.venvs/subagent_a100"
+export VIRTUAL_ENV="/projects/mhahsler/course_recomm/allocation001/venvs/subagent_a100"
 source "${VIRTUAL_ENV}/bin/activate"
 
 PROJECT_ROOT="/projects/mhahsler/course_recomm/allocation001/AI_Club/paper/subagent_manager"
