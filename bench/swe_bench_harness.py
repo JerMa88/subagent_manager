@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -123,59 +124,77 @@ def clone_and_checkout(
     repo_url = f"https://github.com/{repo}.git"
     repo_name = repo.replace("/", "__")
     repo_dir = os.path.join(work_dir, repo_name)
+    git_dir = os.path.join(repo_dir, ".git")
 
     if os.path.exists(repo_dir):
-        logger.log(
-            VERBOSE1,
-            f"[HARNESS] Repo already cloned at {repo_dir}, resetting to {base_commit[:8]}",
-        )
-        # Reset existing clone
+        if not os.path.isdir(git_dir):
+            logger.warning(
+                f"[HARNESS] Directory {repo_dir} exists but is not a git repo (missing .git). Cleaning..."
+            )
+            shutil.rmtree(repo_dir, ignore_errors=True)
+        else:
+            logger.log(
+                VERBOSE1,
+                f"[HARNESS] Repo already cloned at {repo_dir}, resetting to {base_commit[:8]}",
+            )
+            try:
+                subprocess.run(
+                    ["git", "reset", "--hard", "HEAD"],
+                    cwd=repo_dir, capture_output=True, check=True,
+                )
+                subprocess.run(
+                    ["git", "checkout", "-f", base_commit],
+                    cwd=repo_dir, capture_output=True, check=True,
+                )
+                subprocess.run(
+                    ["git", "clean", "-fdx"],
+                    cwd=repo_dir, capture_output=True, check=True,
+                )
+                return repo_dir
+            except subprocess.CalledProcessError:
+                logger.log(VERBOSE1, f"[HARNESS] Fast checkout failed for {base_commit[:8]}, fetching remote tags...")
+                try:
+                    subprocess.run(
+                        ["git", "fetch", "--all", "--tags"],
+                        cwd=repo_dir, capture_output=True, check=True, timeout=300,
+                    )
+                    subprocess.run(
+                        ["git", "checkout", "-f", base_commit],
+                        cwd=repo_dir, capture_output=True, check=True,
+                    )
+                    subprocess.run(
+                        ["git", "clean", "-fdx"],
+                        cwd=repo_dir, capture_output=True, check=True,
+                    )
+                    return repo_dir
+                except Exception as fetch_err:
+                    logger.warning(f"[HARNESS] Failed to checkout {base_commit[:8]} after fetch ({fetch_err}). Re-cloning...")
+                    shutil.rmtree(repo_dir, ignore_errors=True)
+
+    os.makedirs(work_dir, exist_ok=True)
+    logger.log(
+        VERBOSE1,
+        f"[HARNESS] Cloning {repo_url} → {repo_dir}",
+    )
+    subprocess.run(
+        ["git", "clone", "--quiet", repo_url, repo_dir],
+        capture_output=True, check=True, timeout=600,
+    )
+    logger.log(VERBOSE1, f"[HARNESS] Checking out {base_commit[:8]}")
+    try:
         subprocess.run(
-            ["git", "reset", "--hard", "HEAD"],
+            ["git", "checkout", "-f", base_commit],
             cwd=repo_dir, capture_output=True, check=True,
         )
-        try:
-            subprocess.run(
-                ["git", "checkout", "-f", base_commit],
-                cwd=repo_dir, capture_output=True, check=True,
-            )
-        except subprocess.CalledProcessError:
-            subprocess.run(
-                ["git", "fetch", "--all"],
-                cwd=repo_dir, capture_output=True, check=True, timeout=300,
-            )
-            subprocess.run(
-                ["git", "checkout", "-f", base_commit],
-                cwd=repo_dir, capture_output=True, check=True,
-            )
+    except subprocess.CalledProcessError:
         subprocess.run(
-            ["git", "clean", "-fdx"],
+            ["git", "fetch", "--all", "--tags"],
+            cwd=repo_dir, capture_output=True, check=True, timeout=300,
+        )
+        subprocess.run(
+            ["git", "checkout", "-f", base_commit],
             cwd=repo_dir, capture_output=True, check=True,
         )
-    else:
-        logger.log(
-            VERBOSE1,
-            f"[HARNESS] Cloning {repo_url} → {repo_dir}",
-        )
-        subprocess.run(
-            ["git", "clone", "--quiet", repo_url, repo_dir],
-            capture_output=True, check=True, timeout=300,
-        )
-        logger.log(VERBOSE1, f"[HARNESS] Checking out {base_commit[:8]}")
-        try:
-            subprocess.run(
-                ["git", "checkout", "-f", base_commit],
-                cwd=repo_dir, capture_output=True, check=True,
-            )
-        except subprocess.CalledProcessError:
-            subprocess.run(
-                ["git", "fetch", "--all"],
-                cwd=repo_dir, capture_output=True, check=True, timeout=300,
-            )
-            subprocess.run(
-                ["git", "checkout", "-f", base_commit],
-                cwd=repo_dir, capture_output=True, check=True,
-            )
 
     return repo_dir
 
@@ -556,12 +575,9 @@ async def run_instance(
         )
 
     # Step 2: Build agents scoped to the repo.
-    # Use a short symlink /tmp/repo -> repo_dir so agent prompts never hit token-
-    # truncation on deeply-nested absolute paths like
-    # /Users/zma/Documents/programs/subagent_manager/bench/repos/sympy__sympy/...
-    # Models see only "/tmp/repo/sympy/printing/mathematica.py" which is 40 chars
-    # instead of 100+, well within any token budget.
-    short_repo = "/tmp/repo"
+    # Parameterize symlink so concurrent instances do not conflict
+    sanitized_id = instance.instance_id.replace("/", "_").replace("__", "_")
+    short_repo = f"/tmp/repo_{sanitized_id}"
     abs_repo_dir = os.path.abspath(repo_dir)  # must be absolute for symlink to resolve from /tmp
     try:
         if os.path.islink(short_repo) or os.path.exists(short_repo):
@@ -571,7 +587,7 @@ async def run_instance(
         logger.log(VERBOSE1, f"[HARNESS] Symlink: {short_repo} → {abs_repo_dir}")
     except Exception as e:
         # Symlink creation failed (permissions, etc.) — fall back to real path
-        logger.warning(f"[HARNESS] Could not create /tmp/repo symlink: {e}. Using full path.")
+        logger.warning(f"[HARNESS] Could not create {short_repo} symlink: {e}. Using full path.")
         abs_repo_dir = repo_dir
         prompt_repo_dir = abs_repo_dir
 
@@ -698,7 +714,9 @@ async def run_instance(
     # script and records the objective signal. This cannot be faked by a subagent
     # self-report.
     diagnosis = result.answer[:500] if result.answer else ""
-    reproduce_script = "/tmp/reproduce.py"
+    reproduce_script = f"/tmp/reproduce_{sanitized_id}.py"
+    if not os.path.exists(reproduce_script):
+        reproduce_script = "/tmp/reproduce.py"
     if os.path.exists(reproduce_script):
         logger.log(
             VERBOSE1,

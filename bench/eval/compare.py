@@ -112,7 +112,8 @@ async def run_baseline(
         )
 
     # Short symlink
-    short_repo = "/tmp/repo_baseline"
+    sanitized_id = instance.instance_id.replace("/", "_").replace("__", "_")
+    short_repo = f"/tmp/repo_baseline_{sanitized_id}"
     try:
         if os.path.islink(short_repo) or os.path.exists(short_repo):
             os.remove(short_repo)

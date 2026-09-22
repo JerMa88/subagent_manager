@@ -178,7 +178,8 @@ async def run_flat(
             effective_depth=2,
         )
 
-    short_repo = "/tmp/repo_flat"
+    sanitized_id = instance.instance_id.replace("/", "_").replace("__", "_")
+    short_repo = f"/tmp/repo_flat_{sanitized_id}"
     abs_repo_dir = os.path.abspath(repo_dir)
     try:
         if os.path.islink(short_repo) or os.path.exists(short_repo):
