@@ -45,6 +45,7 @@ python -m vllm.entrypoints.openai.api_server \
     --max-model-len 32768 \
     --gpu-memory-utilization 0.92 \
     --max-num-seqs 16 \
+    --enforce-eager \
     --enable-prefix-caching \
     --enable-chunked-prefill \
     --trust-remote-code > bench/slurm/logs/vllm_server_${SLURM_JOB_ID}.log 2>&1 &
