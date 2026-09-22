@@ -478,6 +478,8 @@ Examples:
     parser.add_argument("--instance-ids", nargs="+", default=None)
     parser.add_argument("--sample", type=int, default=0,
                         help="Random sample N instances instead of --instance-ids")
+    parser.add_argument("--instances-file", default=None,
+                        help="Path to JSON file containing list of instances")
     parser.add_argument("--all", action="store_true", help="Run all 300 instances")
     parser.add_argument("--levels", nargs="+", type=int, default=[0, 1, 3],
                         help="Levels to run (0=one-shot 1=baseline 2=flat 3=hierarchy 4=deep)")
@@ -487,7 +489,11 @@ Examples:
     args = parser.parse_args()
 
     instance_ids = args.instance_ids or []
-    if args.sample:
+    if args.instances_file:
+        with open(args.instances_file, "r") as f:
+            data = json.load(f)
+            instance_ids = [item["instance_id"] if isinstance(item, dict) else item for item in data]
+    elif args.sample:
         import random
         all_insts = load_swe_bench_instances()
         instance_ids = [i.instance_id for i in random.sample(all_insts, min(args.sample, len(all_insts)))]
