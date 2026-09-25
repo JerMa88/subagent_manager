@@ -48,6 +48,8 @@ python -m vllm.entrypoints.openai.api_server \
     --enforce-eager \
     --enable-prefix-caching \
     --enable-chunked-prefill \
+    --enable-auto-tool-choice \
+    --tool-call-parser hermes \
     --trust-remote-code > bench/slurm/logs/vllm_smoke_${SLURM_JOB_ID}.log 2>&1 &
 
 VLLM_PID=$!

@@ -50,4 +50,6 @@ exec python -m vllm.entrypoints.openai.api_server \
     --max-num-seqs 16 \
     --enable-prefix-caching \
     --enable-chunked-prefill \
+    --enable-auto-tool-choice \
+    --tool-call-parser hermes \
     --trust-remote-code

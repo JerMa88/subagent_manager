@@ -5,13 +5,13 @@
 # ==============================================================================
 #SBATCH --job-name=eval_qwen32b
 #SBATCH --account=mhahsler_course_recomm_0001
-#SBATCH --partition=short
+#SBATCH --partition=batch
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
 #SBATCH --mem=120G
-#SBATCH --time=04:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=bench/slurm/logs/all_in_one_%j.log
 #SBATCH --error=bench/slurm/logs/all_in_one_%j.err
 
@@ -23,6 +23,7 @@ echo "==========================================================================
 
 # ── 1. Setup Environment ─────────────────────────────────────────────────────
 export HF_HOME="${HF_HOME:-/projects/mhahsler/course_recomm/allocation001/hf_cache}"
+export HF_TOKEN=$(cat /users/jerryma/.hf_token 2>/dev/null || true)
 export MODEL_NAME="Qwen/Qwen2.5-Coder-32B-Instruct"
 export VLLM_PORT=8000
 export VIRTUAL_ENV="/projects/mhahsler/course_recomm/allocation001/venvs/subagent_a100"
@@ -48,6 +49,8 @@ python -m vllm.entrypoints.openai.api_server \
     --enforce-eager \
     --enable-prefix-caching \
     --enable-chunked-prefill \
+    --enable-auto-tool-choice \
+    --tool-call-parser hermes \
     --trust-remote-code > bench/slurm/logs/vllm_server_${SLURM_JOB_ID}.log 2>&1 &
 
 VLLM_PID=$!
@@ -104,7 +107,7 @@ python bench/eval/ablation.py \
     --model "openai/${MODEL_NAME}" \
     --api-base "http://127.0.0.1:${VLLM_PORT}/v1" \
     --instances-file "bench/phase1_instances.json" \
-    --levels 0 1 2 3 \
+    --levels 0 1 3 \
     --output "${OUTPUT_DIR}/results_phase1.jsonl" \
     --work-dir "bench/repos" \
     --verbose 1
