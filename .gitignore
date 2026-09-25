@@ -223,3 +223,15 @@ bench/repos*/
 bench/results/
 litellm_kwargs.json
 test_baseline_raw.patch
+
+# SLURM logs and execution outputs
+bench/slurm/logs/
+*.err
+*.out
+
+# Skill and tooling licenses
+.licenses/
+
+# Lockfiles
+uv.lock
+
