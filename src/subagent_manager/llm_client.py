@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -93,7 +94,8 @@ class LLMClient:
         api_key: str | None = None,
         api_base: str | None = None,
         default_temperature: float = 0.0,
-        default_max_tokens: int = 1024,
+        default_max_tokens: int = int(os.environ.get("SUBAGENT_DEFAULT_MAX_TOKENS", "4096")),
+        use_native_tools: bool | None = None,
     ) -> None:
         """
         Initialize the LLM client.
@@ -105,21 +107,33 @@ class LLMClient:
             api_base: Custom API base URL (for self-hosted / Ollama).
             default_temperature: Default temperature for completions.
             default_max_tokens: Default max tokens for completions.
+            use_native_tools: Explicitly enable or disable native LiteLLM tool calling.
+                If None, auto-detected: defaults to False if api_base is provided
+                (preferring the robust prompt-based tool loop for local/vLLM inference),
+                otherwise True for supported cloud providers in _NATIVE_TOOL_PROVIDERS.
         """
         self.model = model
         self.api_key = api_key
         self.api_base = api_base
         self.default_temperature = default_temperature
         self.default_max_tokens = default_max_tokens
+        self._force_native_tools = use_native_tools
 
     # Maximum total chars across all conversation messages before pruning.
-    # Keeps the prompt-based tool loop inside small-model context windows.
-    # Override per-instance if needed: client.MAX_HISTORY_CHARS = 20_000
-    MAX_HISTORY_CHARS: int = 10_000
+    # Keeps the prompt-based tool loop inside context windows.
+    # Override per-instance if needed: client.MAX_HISTORY_CHARS = 120_000
+    MAX_HISTORY_CHARS: int = int(os.environ.get("SUBAGENT_MAX_HISTORY_CHARS", "120000"))
 
     @property
     def _supports_native_tools(self) -> bool:
         """Check if this model's provider supports LiteLLM native tool calling."""
+        if self._force_native_tools is not None:
+            return self._force_native_tools
+        # When api_base is set (e.g. self-hosted vLLM, Ollama, local endpoints),
+        # always default to the robust prompt-based tool loop which supports mandatory_tool_call,
+        # sliding-window context pruning (max_history_chars), and does not depend on server-side parsers.
+        if self.api_base:
+            return False
         provider = self.model.split("/")[0] if "/" in self.model else "openai"
         return provider in _NATIVE_TOOL_PROVIDERS
 

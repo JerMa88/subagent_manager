@@ -129,8 +129,8 @@ class ShellExecTool(BaseTool):
 
             result = "\n".join(parts)
 
-            # Truncate very long output
-            max_len = 6000
+            # Truncate very long output (configurable, default 32K for modern models)
+            max_len = int(os.getenv("SWE_BENCH_SHELL_MAX_LEN", "32000"))
             if len(result) > max_len:
                 result = result[:max_len] + "\n\n[... output truncated]"
 
@@ -486,8 +486,8 @@ class StrReplaceTool(BaseTool):
         ),
     ]
 
-    # Conservative default — str_replace results are short (mini-diff confirmations)
-    max_result_length = 8000
+    # Results confirmation — expanded for large context models
+    max_result_length = int(os.getenv("SWE_BENCH_STR_REPLACE_MAX_LEN", "32000"))
 
     def __init__(self, working_dir: str | None = None) -> None:
         """
@@ -638,8 +638,8 @@ class ViewFileTool(BaseTool):
         ),
     ]
 
-    # Source files can be large — match FileReaderTool's limit
-    max_result_length = 12000
+    # Source files can be large — expanded for modern large-context models
+    max_result_length = int(os.getenv("SWE_BENCH_FILE_MAX_LEN", "64000"))
 
     def __init__(self, working_dir: str | None = None) -> None:
         """
