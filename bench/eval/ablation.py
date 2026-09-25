@@ -372,7 +372,31 @@ async def run_ablation(
 
     rows: list[dict] = []
 
+    # Read existing output if present to enable seamless resumption
+    completed_ids: set[str] = set()
+    if os.path.exists(output):
+        try:
+            with open(output, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            d = json.loads(line)
+                            if "instance_id" in d:
+                                completed_ids.add(d["instance_id"])
+                                rows.append(d)
+                        except json.JSONDecodeError:
+                            pass
+            if completed_ids:
+                print(f"[RESUME] Found {len(completed_ids)} previously completed instances in {output}")
+        except Exception as e:
+            logger.warning(f"Could not read existing results from {output}: {e}")
+
     for inst in instances:
+        if inst.instance_id in completed_ids:
+            print(f"Skipping {inst.instance_id} (already evaluated)")
+            continue
+
         print(f"\n{'═'*60}")
         print(f"  Instance: {inst.instance_id}")
         print(f"{'═'*60}")
@@ -426,6 +450,7 @@ async def run_ablation(
             row[f"l{level}_retry"] = getattr(result, "retry_count", 0)
             row[f"l{level}_depth"] = getattr(result, "effective_depth", level)
             row[f"l{level}_error"] = result.error or ""
+            row[f"l{level}_diff"] = result.prediction.model_patch if (result.prediction and result.prediction.model_patch) else ""
             row[f"l{level}_domain_trace"] = getattr(result, "domain_trace", [])
 
             # Reset repo between conditions so each starts from the same commit

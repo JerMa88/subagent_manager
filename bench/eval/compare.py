@@ -31,12 +31,14 @@ from typing import Any
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from subagent_manager import SubAgentManager, SubAgentConfig, configure_logging
+from subagent_manager import SubAgentManager, SubAgent, SubAgentConfig, configure_logging
+from subagent_manager.llm_client import LLMClient
 from subagent_manager.logging_config import VERBOSE1
 
 from bench.swe_bench_harness import (
     RunResult,
     SWEBenchInstance,
+    SWEBenchPrediction,
     clone_and_checkout,
     extract_patch,
     load_swe_bench_instances,
@@ -154,16 +156,13 @@ async def run_baseline(
         except Exception:
             pass
 
-    agent = build_baseline_agent(repo_dir, prompt_repo_dir)
-    manager = SubAgentManager(
+    agent_cfg = build_baseline_agent(repo_dir, prompt_repo_dir)
+    llm_client = LLMClient(
         model=model,
-        subagents=[agent],
-        strategy="sequential",
-        max_subtasks=1,
         api_base=api_base,
         api_key=api_key,
-        verbose=verbosity,
     )
+    agent = SubAgent(config=agent_cfg, llm_client=llm_client)
 
     issue_text = instance.problem_statement
     full_prompt = (
@@ -173,7 +172,7 @@ async def run_baseline(
     )
 
     try:
-        await manager.run(full_prompt)
+        sub_result = await agent.execute(task=full_prompt)
     except Exception as e:
         return RunResult(
             instance_id=instance.instance_id,
@@ -181,6 +180,8 @@ async def run_baseline(
             patch_generated=False,
             error=f"Baseline failed: {e}",
             elapsed_seconds=time.monotonic() - t0,
+            effective_depth=1,
+            schema_version=2,
         )
 
     patch = extract_patch(repo_dir)
@@ -188,8 +189,17 @@ async def run_baseline(
         instance_id=instance.instance_id,
         success=True,
         patch_generated=bool(patch),
-        patch=patch,
+        prediction=SWEBenchPrediction(
+            instance_id=instance.instance_id,
+            model_name_or_path=model,
+            model_patch=patch or "",
+        ) if patch else None,
         elapsed_seconds=time.monotonic() - t0,
+        total_tokens=sub_result.tokens_used,
+        total_tool_calls=sub_result.tool_calls_made,
+        subtasks_count=1,
+        effective_depth=1,
+        schema_version=2,
     )
 
 

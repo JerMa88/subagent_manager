@@ -128,7 +128,7 @@ def plot_ablation(jsonl_path, output_dir="bench/results"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", type=str, default="bench/results/ablation_300.jsonl")
+    parser.add_argument("--input", "--results", dest="input", type=str, default="bench/results/ablation_300.jsonl")
     parser.add_argument("--output-dir", type=str, default="bench/results")
     args = parser.parse_args()
     plot_ablation(args.input, args.output_dir)
